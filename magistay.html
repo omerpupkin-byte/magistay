@@ -509,11 +509,27 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
 
       <div class="search-pill-wrap afu d3">
         <div class="search-pill">
-          <div class="spf" onclick="goto('s-quiz-1')"><span class="spf-l">Where to?</span><span class="spf-v">City, region or landmark</span></div>
-          <div class="spf" onclick="goto('s-quiz-1')"><span class="spf-l">Check in</span><span class="spf-v">Add dates — or stay flexible</span></div>
-          <div class="spf" onclick="goto('s-quiz-1')"><span class="spf-l">Check out</span><span class="spf-v">Add dates — or stay flexible</span></div>
-          <div class="spf" onclick="goto('s-quiz-1')"><span class="spf-l">Guests</span><span class="spf-v">Who's coming?</span></div>
-          <button class="search-btn" onclick="goto('s-quiz-1')">
+          <div class="spf">
+            <span class="spf-l">Where to?</span>
+            <input id="hero-dest" type="text" placeholder="City, region or landmark"
+              style="border:none;outline:none;font-size:13px;color:var(--black);background:transparent;width:100%;margin-top:2px;font-family:'DM Sans',sans-serif;"
+              onkeydown="if(event.key==='Enter') heroSearch()"/>
+          </div>
+          <div class="spf">
+            <span class="spf-l">Check in</span>
+            <input id="hero-checkin" type="date"
+              style="border:none;outline:none;font-size:13px;color:var(--g2);background:transparent;width:100%;margin-top:2px;font-family:'DM Sans',sans-serif;"/>
+          </div>
+          <div class="spf">
+            <span class="spf-l">Check out</span>
+            <input id="hero-checkout" type="date"
+              style="border:none;outline:none;font-size:13px;color:var(--g2);background:transparent;width:100%;margin-top:2px;font-family:'DM Sans',sans-serif;"/>
+          </div>
+          <div class="spf" onclick="goto('s-quiz-1')" style="cursor:pointer;">
+            <span class="spf-l">Guests</span>
+            <span class="spf-v" id="hero-guests-lbl">2 adults · 1 infant</span>
+          </div>
+          <button class="search-btn" onclick="heroSearch()">
             <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="white" stroke-width="1.5"/><path d="M11 11L14 14" stroke="white" stroke-width="1.5" stroke-linecap="round"/></svg>
             Find my match
           </button>
@@ -876,6 +892,7 @@ function adj(field,delta){
   var note=document.getElementById('infant-note');
   if(note) note.style.display=S.infants>0?'flex':'none';
   updateSummary();
+  updateHeroGuests();
 }
 function updateSummary(){
   var parts=[S.adults+' adult'+(S.adults!==1?'s':'')];
@@ -950,6 +967,8 @@ function buildQuizPayload(){
     destination: dest?dest.value.trim():'Barcelona',
     radiusKm: radius?Number(radius.value):5,
     dateFlexibility: flexMode,
+    checkIn:  window._heroCheckIn  || null,
+    checkOut: window._heroCheckOut || null,
     stars: starVal,
     vibes: vibes,
     priorities: priorities,
@@ -1260,6 +1279,48 @@ function setGalleryPhoto(idx){
 function closeGallery(){
   var modal=document.getElementById('gallery-modal');
   if(modal) modal.classList.remove('open');
+}
+
+// ─── HERO SEARCH — connects landing pill to quiz ───────────────
+function heroSearch(){
+  var dest    = document.getElementById('hero-dest');
+  var checkIn = document.getElementById('hero-checkin');
+  var checkOut= document.getElementById('hero-checkout');
+
+  // Pre-fill quiz step 2 fields if user typed something
+  var destInput = document.getElementById('dest');
+  if(dest && dest.value.trim() && destInput){
+    destInput.value = dest.value.trim();
+  }
+
+  // Pre-fill dates if entered
+  if(checkIn && checkIn.value){
+    var ciEl = document.querySelector('#s-quiz-2 input[type=date]:first-of-type');
+    // We'll store them for buildQuizPayload to pick up
+    window._heroCheckIn  = checkIn.value;
+    window._heroCheckOut = checkOut ? checkOut.value : '';
+    // Switch to exact dates mode
+    document.querySelectorAll('.flex-opt').forEach(o=>o.classList.remove('sel'));
+    var exactOpt = document.querySelector('.flex-opt');
+    if(exactOpt) exactOpt.classList.add('sel');
+    flexMode = 'exact';
+  }
+
+  // If destination was filled, skip to step 2; otherwise go to step 1
+  if(dest && dest.value.trim()){
+    goto('s-quiz-2');
+  } else {
+    goto('s-quiz-1');
+  }
+}
+
+// Keep guest label in hero pill in sync with counters
+function updateHeroGuests(){
+  var parts=[S.adults+' adult'+(S.adults!==1?'s':'')];
+  if(S.children>0) parts.push(S.children+' child'+(S.children!==1?'ren':''));
+  if(S.infants>0)  parts.push(S.infants+' infant'+(S.infants!==1?'s':''));
+  var el=document.getElementById('hero-guests-lbl');
+  if(el) el.textContent=parts.join(' · ');
 }
 
 // ─── INIT ───────────────────────────────────────────────────────
