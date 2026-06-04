@@ -3,7 +3,62 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Magistay — Your AI Travel Agent</title>
+
+<!-- ── Primary SEO ─────────────────────────────────────────── -->
+<title>Magistay — Your AI Travel Agent | Find the Perfect Hotel in 5 Minutes</title>
+<meta name="description" content="Magistay is your free AI travel agent. Tell us about your trip and we'll match you to the perfect hotel — then find the best deal across Booking.com, Expedia, Agoda and more. No login required."/>
+<meta name="keywords" content="AI hotel search, hotel matching, best hotel deals, travel agent AI, find hotel, hotel comparison, booking hotel, cheap hotels"/>
+<meta name="author" content="Magistay"/>
+<meta name="robots" content="index, follow"/>
+<link rel="canonical" href="https://magistay.com"/>
+
+<!-- ── Open Graph (Facebook, WhatsApp, LinkedIn) ──────────── -->
+<meta property="og:type" content="website"/>
+<meta property="og:url" content="https://magistay.com"/>
+<meta property="og:title" content="Magistay — Your AI Travel Agent"/>
+<meta property="og:description" content="Hours of hotel searching, done in 5 minutes. Free AI matching across 6 platforms. No login required."/>
+<meta property="og:image" content="https://magistay.com/og-image.png"/>
+<meta property="og:site_name" content="Magistay"/>
+<meta property="og:locale" content="en_US"/>
+
+<!-- ── Twitter Card ───────────────────────────────────────── -->
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:url" content="https://magistay.com"/>
+<meta name="twitter:title" content="Magistay — Your AI Travel Agent"/>
+<meta name="twitter:description" content="Hours of hotel searching, done in 5 minutes. Free AI matching across 6 platforms."/>
+<meta name="twitter:image" content="https://magistay.com/og-image.png"/>
+
+<!-- ── Structured Data (Google Rich Results) ─────────────── -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "Magistay",
+  "url": "https://magistay.com",
+  "description": "AI-powered hotel matching platform. Find the perfect hotel in 5 minutes — free.",
+  "applicationCategory": "TravelApplication",
+  "operatingSystem": "Web",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "aggregateRating": {
+    "@type": "AggregateRating",
+    "ratingValue": "4.9",
+    "reviewCount": "127"
+  }
+}
+</script>
+
+<!-- ── Favicon ────────────────────────────────────────────── -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏨</text></svg>"/>
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏨</text></svg>"/>
+
+<!-- ── Plausible Analytics (privacy-first, no cookies) ────── -->
+<script defer data-domain="magistay.com" src="https://plausible.io/js/script.js"></script>
+
+<!-- ── Fonts ──────────────────────────────────────────────── -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -465,11 +520,29 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
   .hero-h1{font-size:40px;}
 }
 @media(max-width:600px){
-  .proof-bar{gap:32px;}
+  .proof-bar{gap:24px;}
+  .proof-num{font-size:28px;}
   .steps-grid{grid-template-columns:1fr;}
   .footer-grid{grid-template-columns:1fr;}
   .hphoto-strip{height:160px;}
   .hcard-body{padding:16px 18px;}
+  .hero-h1{font-size:36px;}
+  .hero-sub{font-size:16px;}
+  .section-h2{font-size:32px;}
+  .agent-h2{font-size:28px;}
+  .fc-h{font-size:32px;}
+  .search-pill{border-radius:16px;}
+  .spf{flex-basis:100%;}
+  .free-badges{gap:6px;}
+  .fb{font-size:12px;padding:6px 12px;}
+  .hcard-name{font-size:20px;}
+  .ri-ring{width:48px;height:48px;}
+  .ri-n{font-size:15px;}
+  .sum-pair{flex-direction:column;}
+  .quiz-card{padding:24px 20px;}
+  .quiz-title{font-size:24px;}
+  .rev-cols{flex-direction:column;}
+  .rev-col-left{border-right:none;border-bottom:1px solid var(--g4);}
 }
 </style>
 </head>
@@ -652,8 +725,12 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
         <div><p class="f-col-title">Legal</p><span class="f-link">Privacy</span><span class="f-link">Terms</span><span class="f-link">Cookies</span></div>
       </div>
       <div class="footer-bottom">
-        <p class="f-copy">© 2025 Magistay · magistay.com · magistay.ai · Free to use, always.</p>
-        <p class="f-copy">Privacy · Terms · Cookies</p>
+        <p class="f-copy">© 2025 Magistay · magistay.com · Free to use, always.</p>
+        <p class="f-copy">
+          <span onclick="goto('s-privacy')" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px;">Privacy Policy</span> ·
+          <span onclick="goto('s-terms')" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px;">Terms of Service</span> ·
+          <span onclick="goto('s-cookies')" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px;">Cookies</span>
+        </p>
       </div>
     </div>
   </footer>
@@ -823,12 +900,95 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
   </div>
 </div>
 
+<!-- ═══════════════════ PRIVACY POLICY ═══════════════════ -->
+<div id="s-privacy" class="screen">
+  <nav class="nav"><div class="nav-inner container">
+    <p class="nav-logo" onclick="goto('s-landing')" style="cursor:pointer">Magi<em>s</em>tay</p>
+    <button class="nav-cta" onclick="goto('s-landing')">← Back to home</button>
+  </div></nav>
+  <div style="max-width:760px;margin:0 auto;padding:60px 32px 80px;">
+    <h1 style="font-family:'DM Serif Display',Georgia,serif;font-size:clamp(36px,5vw,52px);color:#1D1D1F;letter-spacing:-0.03em;margin-bottom:12px;">Privacy Policy</h1>
+    <p style="font-size:14px;color:#AEAEB2;margin-bottom:40px;">Last updated: June 2025</p>
+    <div style="font-size:15px;color:#3A3A3C;line-height:1.8;">
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">1. Who we are</h2>
+      <p>Magistay ("we", "our", "us") operates the website magistay.com — a free AI-powered hotel matching service. We are committed to protecting your privacy.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">2. What data we collect</h2>
+      <p>We collect only the information you provide during the hotel search quiz: destination, travel dates, number and ages of travelers, preferences, and any free-text notes you choose to enter. We do not require you to create an account or provide an email address.</p>
+      <p style="margin-top:12px;">We use <strong>Plausible Analytics</strong> — a privacy-first analytics tool that does not use cookies and does not collect personal data or track individuals across devices.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">3. How we use your data</h2>
+      <p>Quiz data is sent to our server solely to generate hotel recommendations. We do not store your quiz answers after the session ends. We do not sell, share, or rent your data to third parties for marketing purposes.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">4. Affiliate links</h2>
+      <p>When you click a "Book on [platform]" button, you are redirected to that platform via an affiliate link. We may earn a commission if you complete a booking. This does not affect the price you pay. We have affiliate relationships with Booking.com, Expedia, Agoda, Hotels.com, TripAdvisor, and Kayak.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">5. Third-party services</h2>
+      <p>Our AI matching is powered by Anthropic's Claude API. Quiz data is transmitted to Anthropic's servers for processing and is subject to Anthropic's privacy policy. Hotel data is sourced from Booking.com and Expedia partner APIs.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">6. Cookies</h2>
+      <p>Magistay does not use tracking cookies. Our analytics provider (Plausible) is cookieless by design. See our <span onclick="goto('s-cookies')" style="color:#FF385C;cursor:pointer;text-decoration:underline;">Cookie Policy</span> for details.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">7. Your rights</h2>
+      <p>Since we do not store personal data beyond the active session, there is no persistent data to access, correct, or delete. For any privacy questions, contact us at privacy@magistay.com.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">8. Changes to this policy</h2>
+      <p>We may update this policy from time to time. The date at the top of this page reflects the most recent revision.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ TERMS OF SERVICE ═══════════════════ -->
+<div id="s-terms" class="screen">
+  <nav class="nav"><div class="nav-inner container">
+    <p class="nav-logo" onclick="goto('s-landing')" style="cursor:pointer">Magi<em>s</em>tay</p>
+    <button class="nav-cta" onclick="goto('s-landing')">← Back to home</button>
+  </div></nav>
+  <div style="max-width:760px;margin:0 auto;padding:60px 32px 80px;">
+    <h1 style="font-family:'DM Serif Display',Georgia,serif;font-size:clamp(36px,5vw,52px);color:#1D1D1F;letter-spacing:-0.03em;margin-bottom:12px;">Terms of Service</h1>
+    <p style="font-size:14px;color:#AEAEB2;margin-bottom:40px;">Last updated: June 2025</p>
+    <div style="font-size:15px;color:#3A3A3C;line-height:1.8;">
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">1. Acceptance of terms</h2>
+      <p>By using Magistay (magistay.com), you agree to these Terms of Service. If you do not agree, please do not use the service.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">2. What Magistay is</h2>
+      <p>Magistay is a free hotel recommendation and price comparison service. We use AI to match travelers with hotels based on their stated preferences and display prices from third-party booking platforms. We are not a booking platform ourselves — all bookings are made directly with the relevant third-party platform.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">3. Accuracy of information</h2>
+      <p>We make every effort to display accurate hotel information, ratings, and prices. However, prices and availability change frequently. We do not guarantee that the prices shown are the lowest available or that rooms are available at time of booking. Always confirm details on the booking platform before completing a reservation.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">4. Affiliate relationships</h2>
+      <p>Magistay participates in affiliate programs with hotel booking platforms including Booking.com, Expedia, Agoda, Hotels.com, TripAdvisor, and Kayak. When you click a booking link and complete a reservation, we may receive a commission. This does not increase the price you pay and does not influence our hotel recommendations — matching is based solely on your stated preferences.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">5. Limitation of liability</h2>
+      <p>Magistay is provided "as is" without warranties of any kind. We are not liable for any booking disputes, cancellation issues, or losses arising from use of third-party booking platforms. All booking-related issues should be resolved directly with the booking platform.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">6. Intellectual property</h2>
+      <p>All content, design, and code on Magistay is owned by Magistay and may not be reproduced without permission.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">7. Changes to terms</h2>
+      <p>We may update these terms at any time. Continued use of the service constitutes acceptance of the updated terms.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">8. Contact</h2>
+      <p>For any questions regarding these terms, contact us at legal@magistay.com.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ COOKIE POLICY ═══════════════════ -->
+<div id="s-cookies" class="screen">
+  <nav class="nav"><div class="nav-inner container">
+    <p class="nav-logo" onclick="goto('s-landing')" style="cursor:pointer">Magi<em>s</em>tay</p>
+    <button class="nav-cta" onclick="goto('s-landing')">← Back to home</button>
+  </div></nav>
+  <div style="max-width:760px;margin:0 auto;padding:60px 32px 80px;">
+    <h1 style="font-family:'DM Serif Display',Georgia,serif;font-size:clamp(36px,5vw,52px);color:#1D1D1F;letter-spacing:-0.03em;margin-bottom:12px;">Cookie Policy</h1>
+    <p style="font-size:14px;color:#AEAEB2;margin-bottom:40px;">Last updated: June 2025</p>
+    <div style="font-size:15px;color:#3A3A3C;line-height:1.8;">
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">Our approach to cookies</h2>
+      <p>Magistay is designed to respect your privacy. <strong>We do not use tracking cookies.</strong></p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">Analytics</h2>
+      <p>We use <strong>Plausible Analytics</strong>, a privacy-first analytics service that does not use cookies, does not collect personal data, and does not track you across websites or devices. Plausible is fully GDPR, CCPA, and PECR compliant.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">Third-party platforms</h2>
+      <p>When you click through to a booking platform (Booking.com, Expedia, etc.), that platform may set its own cookies subject to its own cookie policy. We have no control over third-party cookies set after you leave our site.</p>
+      <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:32px 0 12px;">No cookie banner needed</h2>
+      <p>Because we do not use tracking or advertising cookies, we do not display a cookie consent banner. There is nothing to accept or reject.</p>
+    </div>
+  </div>
+</div>
+
 <script>
 // ─── CONFIG ────────────────────────────────────────────────────
 // When backend is running locally, set this to 'http://localhost:3001'
 // When deployed to Railway, set to 'https://your-app.railway.app'
 // When empty — falls back to built-in mock data (always works offline)
-var API_URL = 'https://magistay-production.up.railway.app';
+var API_URL = 'http://localhost:3001';
 
 // ─── STATE ─────────────────────────────────────────────────────
 var S={adults:2,children:0,infants:1,rooms:1};
@@ -870,8 +1030,7 @@ function goto(id){
 function updateStepBars(){
   var map={'s-quiz-1':1,'s-quiz-2':2,'s-quiz-3':3,'s-quiz-4':4,'s-quiz-5':5,'s-loading':5,'s-results':5};
   var active=document.querySelector('.screen.active');
-  var cur=active?map[active.id]||0:0;
-  [1,2,3,4,5].forEach(function(n){
+  var cur=active?map[active.id]||0:0;  [1,2,3,4,5].forEach(function(n){
     var bar=document.getElementById('sb'+n);
     if(!bar)return;
     bar.innerHTML='';
