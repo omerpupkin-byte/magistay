@@ -1001,10 +1001,11 @@ var selectedBudget='80_150';
 var specialNeeds={};
 var curG=null,curGi=0;
 var LOAD_MSGS=[
+  'Reading your requirements...',
   'Searching thousands of hotels...',
-  'Reading recent guest reviews...',
+  'Reading 18,000+ guest reviews...',
   'Comparing prices across 6 platforms...',
-  'Calculating RI scores...',
+  'Running AI matching for your profile...',
   'Building your personal shortlist...'
 ];
 
@@ -1163,8 +1164,17 @@ function startLoading(){
     .catch(function(err){
       clearInterval(iv);
       console.warn('[Magistay] API unavailable, using built-in mock:', err.message);
+      // Show brief notice but still show results
       renderResults(FALLBACK_HOTELS, payload);
       goto('s-results');
+      // Show soft warning
+      setTimeout(function(){
+        var errEl=document.getElementById('res-error');
+        if(errEl){
+          errEl.style.display='block';
+          errEl.textContent='Showing sample results — live hotel data temporarily unavailable. Results update automatically when the connection is restored.';
+        }
+      }, 500);
     });
 }
 
@@ -1222,11 +1232,24 @@ function renderResults(hotels, quiz){
     container.appendChild(buildHotelCard(hotel,idx));
   });
 
-  // Search again button
-  var btn=document.createElement('div');
-  btn.style.cssText='text-align:center;padding-top:8px;padding-bottom:8px;';
-  btn.innerHTML='<button class="results-new-search" onclick="goto(\'s-quiz-1\')" style="font-size:14px;padding:12px 28px">Search again</button>';
-  container.appendChild(btn);
+  // Email capture + Share after results
+  var bottomDiv=document.createElement('div');
+  bottomDiv.style.cssText='padding-bottom:20px;';
+  bottomDiv.innerHTML=
+    // Share button
+    '<div style="display:flex;justify-content:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">'+
+      '<button onclick="shareResults(\''+(hotels[0]?hotels[0].name.replace(/'/g,"\\'"):'this hotel')+'\','+(hotels[0]&&hotels[0].bestPrice?hotels[0].bestPrice.price:'0')+',\'\')" '+
+        'style="display:flex;align-items:center;gap:7px;background:var(--white);border:1px solid var(--g4);border-radius:var(--r-pill);padding:10px 20px;font-size:13px;font-weight:500;font-family:\'DM Sans\',sans-serif;cursor:pointer;color:var(--black);">'+
+        '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="11" cy="2.5" r="1.5" stroke="currentColor" stroke-width="1.3"/><circle cx="11" cy="11.5" r="1.5" stroke="currentColor" stroke-width="1.3"/><circle cx="2.5" cy="7" r="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 7.7l5.5 3.1M4 6.3l5.5-3.1" stroke="currentColor" stroke-width="1.3"/></svg>'+
+        'Share these results'+
+      '</button>'+
+      '<button onclick="goto(\'s-quiz-1\')" style="display:flex;align-items:center;gap:7px;background:var(--white);border:1px solid var(--g4);border-radius:var(--r-pill);padding:10px 20px;font-size:13px;font-weight:500;font-family:\'DM Sans\',sans-serif;cursor:pointer;color:var(--black);">'+
+        'Search again →'+
+      '</button>'+
+    '</div>'+
+    // Email capture
+    buildEmailCapture();
+  container.appendChild(bottomDiv);
 }
 
 // ─── BUILD SINGLE HOTEL CARD ────────────────────────────────────
@@ -1239,6 +1262,12 @@ function buildHotelCard(h,idx){
   // Platform rows HTML
   var platNames={bookingCom:'Booking.com',expedia:'Expedia',agoda:'Agoda',hotelsCom:'Hotels.com',tripAdvisor:'TripAdvisor',kayak:'Kayak'};
   var platforms=h.platforms||{};
+  var affiliateLinks=h.affiliateLinks||{};
+
+  // Get affiliate link for a platform
+  function getLink(key){
+    return affiliateLinks[key] || buildFallbackLink(key, h);
+  }
 
   // Std rows — sorted by price
   var stdRows=Object.entries(platforms)
@@ -1247,15 +1276,22 @@ function buildHotelCard(h,idx){
     .map(function(e,i){
       var key=e[0],p=e[1];
       var isBest=h.bestPrice&&h.bestPrice.platform===key;
-      return '<div class="ppr'+(isBest?' bp':'')+'">'+
-        '<div class="ppr-logo"><p class="ppr-logo-t">'+platNames[key]+'</p></div>'+
-        '<div class="ppr-body">'+
-          (isBest?'<span class="deal-lbl dl-best">Best price</span>':'')+
-          '<p class="ppr-room">Standard rate</p>'+
-          '<p class="ppr-terms">Non-refundable · Pay now</p>'+
+      var link=getLink(key);
+      return '<a href="'+link+'" target="_blank" rel="noopener" style="text-decoration:none;display:block;">'+
+        '<div class="ppr'+(isBest?' bp':'')+'" style="cursor:pointer;">'+
+          '<div class="ppr-logo"><p class="ppr-logo-t">'+platNames[key]+'</p></div>'+
+          '<div class="ppr-body">'+
+            (isBest?'<span class="deal-lbl dl-best">Best price</span>':'')+
+            '<p class="ppr-room">Standard rate</p>'+
+            '<p class="ppr-terms">Non-refundable · Pay now</p>'+
+          '</div>'+
+          '<div class="ppr-price-col">'+
+            '<p class="ppr-amt">$'+p.price+'</p>'+
+            '<p class="ppr-night">/night</p>'+
+            '<p style="font-size:10px;font-weight:600;color:var(--coral);margin-top:3px;">Book →</p>'+
+          '</div>'+
         '</div>'+
-        '<div class="ppr-price-col"><p class="ppr-amt">$'+p.price+'</p><p class="ppr-night">/night</p></div>'+
-      '</div>';
+      '</a>';
     }).join('');
 
   // Flex rows
@@ -1265,18 +1301,23 @@ function buildHotelCard(h,idx){
     .map(function(e,i){
       var key=e[0],p=e[1];
       var isBest=h.bestFlex&&h.bestFlex.platform===key;
-      return '<div class="ppr'+(isBest?' bfl':'')+'">'+
-        '<div class="ppr-logo"><p class="ppr-logo-t">'+platNames[key]+'</p></div>'+
-        '<div class="ppr-body">'+
-          (isBest?'<span class="deal-lbl dl-flex">Most flexible</span>':'')+
-          '<p class="ppr-room">Flexible rate</p>'+
-          '<p class="ppr-terms">'+(p.flexTerms||'Free cancellation available')+'</p>'+
+      var link=getLink(key);
+      return '<a href="'+link+'" target="_blank" rel="noopener" style="text-decoration:none;display:block;">'+
+        '<div class="ppr'+(isBest?' bfl':'')+'" style="cursor:pointer;">'+
+          '<div class="ppr-logo"><p class="ppr-logo-t">'+platNames[key]+'</p></div>'+
+          '<div class="ppr-body">'+
+            (isBest?'<span class="deal-lbl dl-flex">Most flexible</span>':'')+
+            '<p class="ppr-room">Flexible rate</p>'+
+            '<p class="ppr-terms">'+(p.flexTerms||'Free cancellation available')+'</p>'+
+          '</div>'+
+          '<div class="ppr-price-col">'+
+            '<p class="ppr-amt">$'+p.flexible+'</p>'+
+            '<p class="ppr-night">/night</p>'+
+            '<p style="font-size:10px;font-weight:600;color:var(--blue);margin-top:3px;">Book →</p>'+
+          '</div>'+
         '</div>'+
-        '<div class="ppr-price-col"><p class="ppr-amt">$'+p.flexible+'</p><p class="ppr-night">/night</p></div>'+
-      '</div>';
+      '</a>';
     }).join('');
-
-  if(!flexRows) flexRows='<p style="font-size:12px;color:var(--g3);padding:8px 0;">No flexible rates available for these dates.</p>';
 
   // Platform RI bars
   var riBars=Object.entries(platforms)
@@ -1480,6 +1521,54 @@ function updateHeroGuests(){
   if(S.infants>0)  parts.push(S.infants+' infant'+(S.infants!==1?'s':''));
   var el=document.getElementById('hero-guests-lbl');
   if(el) el.textContent=parts.join(' · ');
+}
+
+// ─── FALLBACK AFFILIATE LINKS ───────────────────────────────────
+// Used when server doesn't return affiliate links yet
+function buildFallbackLink(platform, hotel){
+  var name=encodeURIComponent(hotel.name||'');
+  var city=encodeURIComponent(hotel.city||'');
+  switch(platform){
+    case 'bookingCom':  return 'https://www.booking.com/searchresults.html?ss='+name;
+    case 'expedia':     return 'https://www.expedia.com/Hotel-Search?destination='+name;
+    case 'agoda':       return 'https://www.agoda.com/search?city='+city;
+    case 'hotelsCom':   return 'https://www.hotels.com/search.do?q='+name;
+    case 'tripAdvisor': return 'https://www.tripadvisor.com/Search?q='+name;
+    case 'kayak':       return 'https://www.kayak.com/hotels/'+city;
+    default:            return 'https://www.booking.com/searchresults.html?ss='+name;
+  }
+}
+
+// ─── SHARE RESULTS ──────────────────────────────────────────────
+function shareResults(hotelName, price, platform){
+  var text='Found '+hotelName+' for $'+price+'/night via Magistay — free AI hotel matching 🏨\nmagistaytay.com';
+  if(navigator.share){
+    navigator.share({title:'Hotel match from Magistay',text:text,url:'https://magistay.com'});
+  } else {
+    var wa='https://wa.me/?text='+encodeURIComponent(text);
+    window.open(wa,'_blank');
+  }
+}
+
+// ─── EMAIL CAPTURE ───────────────────────────────────────────────
+function buildEmailCapture(){
+  return '<div style="background:var(--g5);border:1px solid var(--g4);border-radius:var(--r-xl);padding:28px 24px;margin-top:8px;text-align:center;">'+
+    '<p style="font-family:\'DM Serif Display\',Georgia,serif;font-size:20px;color:var(--black);letter-spacing:-0.02em;margin-bottom:6px;">Get the best deals first.</p>'+
+    '<p style="font-size:13px;color:var(--g2);margin-bottom:18px;line-height:1.6;">We\'ll send you personalised hotel deals and tips — one email a week, unsubscribe anytime.</p>'+
+    '<div style="display:flex;gap:8px;max-width:400px;margin:0 auto;">'+
+      '<input type="email" id="capture-email" placeholder="your@email.com" style="flex:1;padding:11px 14px;border:1px solid var(--g4);border-radius:var(--r-md);font-size:14px;font-family:\'DM Sans\',sans-serif;outline:none;color:var(--black);" />'+
+      '<button onclick="submitEmail()" style="background:var(--black);color:var(--white);border:none;border-radius:var(--r-md);padding:11px 20px;font-size:14px;font-weight:500;font-family:\'DM Sans\',sans-serif;cursor:pointer;white-space:nowrap;">Get deals</button>'+
+    '</div>'+
+    '<p style="font-size:11px;color:var(--g3);margin-top:10px;">No spam. Unsubscribe any time. Free.</p>'+
+  '</div>';
+}
+
+function submitEmail(){
+  var el=document.getElementById('capture-email');
+  if(!el||!el.value.includes('@')) return;
+  el.closest('div[style]').innerHTML='<p style="font-size:14px;color:var(--black);font-weight:500;padding:8px 0;">✅ You\'re in! We\'ll send you the best deals.</p>';
+  // TODO: wire to email service (Mailchimp/Resend) when ready
+  console.log('[EMAIL]', el.value);
 }
 
 // ─── INIT ───────────────────────────────────────────────────────
