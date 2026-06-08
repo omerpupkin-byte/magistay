@@ -1127,8 +1127,8 @@ function buildQuizPayload(){
     destination: dest?dest.value.trim():'Barcelona',
     radiusKm: radius?Number(radius.value):5,
     dateFlexibility: flexMode,
-    checkIn:  window._heroCheckIn  || null,
-    checkOut: window._heroCheckOut || null,
+    checkIn:  window._heroCheckIn  || getDefaultDate(30),
+    checkOut: window._heroCheckOut || getDefaultDate(35),
     stars: starVal,
     vibes: vibes,
     priorities: priorities,
@@ -1523,16 +1523,26 @@ function updateHeroGuests(){
   if(el) el.textContent=parts.join(' · ');
 }
 
+// ─── DATE HELPERS ───────────────────────────────────────────────
+function getDefaultDate(daysFromNow){
+  var d=new Date();
+  d.setDate(d.getDate()+daysFromNow);
+  return d.toISOString().split('T')[0];
+}
+
 // ─── FALLBACK AFFILIATE LINKS ───────────────────────────────────
 // Used when server doesn't return affiliate links yet
 function buildFallbackLink(platform, hotel){
   var name=encodeURIComponent(hotel.name||'');
   var city=encodeURIComponent(hotel.city||'');
+  // Expedia affiliate IDs
+  var expAffcid='US.DIRECT.PHG.1101l431027.1100l68075';
+  var expAfflid='1101lDpY8aoX';
   switch(platform){
     case 'bookingCom':  return 'https://www.booking.com/searchresults.html?ss='+name;
-    case 'expedia':     return 'https://www.expedia.com/Hotel-Search?destination='+name;
+    case 'expedia':     return 'https://www.expedia.com/Hotel-Search?destination='+name+'&affcid='+expAffcid+'&afflid='+expAfflid+'&ref_id='+expAfflid;
+    case 'hotelsCom':   return 'https://www.hotels.com/search.do?q='+name+'&affcid='+expAffcid+'&afflid='+expAfflid;
     case 'agoda':       return 'https://www.agoda.com/search?city='+city;
-    case 'hotelsCom':   return 'https://www.hotels.com/search.do?q='+name;
     case 'tripAdvisor': return 'https://www.tripadvisor.com/Search?q='+name;
     case 'kayak':       return 'https://www.kayak.com/hotels/'+city;
     default:            return 'https://www.booking.com/searchresults.html?ss='+name;
