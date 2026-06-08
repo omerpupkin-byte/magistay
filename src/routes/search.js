@@ -10,13 +10,36 @@ import { validateQuiz }      from '../utils/validateQuiz.js';
 
 const router = Router();
 
+// ── Simple in-memory cache ─────────────────────────────────────
+// Key: destination+checkIn+checkOut+adults+budget
+// TTL: 30 minutes
+const cache = new Map();
+const CACHE_TTL = 30 * 60 * 1000;
+
+function getCacheKey(quiz) {
+  return `${quiz.destination}|${quiz.checkIn}|${quiz.checkOut}|${quiz.adults}|${quiz.budget}|${quiz.stars}`;
+}
+
+function getCache(key) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL) { cache.delete(key); return null; }
+  return entry.data;
+}
+
+function setCache(key, data) {
+  cache.set(key, { data, ts: Date.now() });
+  // Limit cache size
+  if (cache.size > 100) {
+    const firstKey = cache.keys().next().value;
+    cache.delete(firstKey);
+  }
+}
+
 // POST /api/search
 // Body: quiz answers (see validateQuiz for full schema)
 // Returns: { hotels: [...], meta: { ... } }
 router.post('/search', async (req, res, next) => {
-  // Set longer timeout for hotel search (Hotelbeds can be slow)
-  req.setTimeout(60000);
-  res.setTimeout(60000);
   try {
     // 1. Validate incoming quiz data
     const { valid, error, quiz } = validateQuiz(req.body);
@@ -25,6 +48,14 @@ router.post('/search', async (req, res, next) => {
     }
 
     console.log(`[SEARCH] Destination: "${quiz.destination}" · ${quiz.adults} adults · ${quiz.infants} infants`);
+
+    // Check cache first
+    const cacheKey = getCacheKey(quiz);
+    const cached = getCache(cacheKey);
+    if (cached) {
+      console.log(`[SEARCH] Cache hit for "${quiz.destination}"`);
+      return res.json({ ...cached, meta: { ...cached.meta, source: 'cache' } });
+    }
 
     // 2. Find candidate hotels (mock or real API)
     const candidates = await searchHotels(quiz);
@@ -41,8 +72,8 @@ router.post('/search', async (req, res, next) => {
     // 4. Review summarisation (runs in parallel for speed)
     const withReviews = await summariseReviews(matched);
 
-    // 5. Return
-    res.json({
+    // 5. Save to cache and return
+    const result = {
       hotels: withReviews,
       meta: {
         count:       withReviews.length,
@@ -51,7 +82,9 @@ router.post('/search', async (req, res, next) => {
         source:      process.env.ANTHROPIC_API_KEY ? 'ai' : 'mock',
         ts:          new Date().toISOString(),
       },
-    });
+    };
+    setCache(cacheKey, result);
+    res.json(result);
 
   } catch (err) {
     next(err);
