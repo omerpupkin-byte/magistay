@@ -985,10 +985,10 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
 
 <script>
 // ─── CONFIG ────────────────────────────────────────────────────
-// When backend is running locally, set this to 'https://magistay-production.up.railway.app'
+// When backend is running locally, set this to 'http://localhost:3001'
 // When deployed to Railway, set to 'https://your-app.railway.app'
 // When empty — falls back to built-in mock data (always works offline)
-var API_URL = 'https://magistay-production.up.railway.app';
+var API_URL = 'http://localhost:3001';
 
 // ─── STATE ─────────────────────────────────────────────────────
 var S={adults:2,children:0,infants:1,rooms:1};
@@ -1183,7 +1183,7 @@ async function fetchHotels(payload){
   if(!API_URL) throw new Error('No API_URL configured');
 
   var controller=new AbortController();
-  var timeout=setTimeout(()=>controller.abort(), 12000);
+  var timeout=setTimeout(()=>controller.abort(), 30000);
 
   try {
     var res=await fetch(API_URL+'/api/search',{
