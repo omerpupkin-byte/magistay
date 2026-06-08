@@ -12,40 +12,44 @@
 // Zero frontend changes required in any mode.
 
 import { getHotelsByCity, computeRI, MOCK_HOTELS } from '../data/mockHotels.js';
-import { geocode }          from './geocoding.js';
-import { searchExpedia }    from './expediaAPI.js';
+import { geocode }            from './geocoding.js';
+import { searchExpedia }      from './expediaAPI.js';
 import { searchBookingCom, buildAllAffiliateLinks } from './bookingAPI.js';
-import { searchAmadeus }    from './amadeusAPI.js';
+import { searchAmadeus }      from './amadeusAPI.js';
+import { searchHotelbeds }    from './hotelbedsAPI.js';
 
 // ── Main entry point ───────────────────────────────────────────
 export async function searchHotels(quiz) {
-  // 1. Geocode destination (Google Maps or fallback)
   const coords = await geocode(quiz.destination);
   quiz.coords  = coords;
 
-  const hasAmadeus = !!process.env.AMADEUS_API_KEY;
-  const hasExpedia = !!process.env.EXPEDIA_API_KEY;
-  const hasBooking = !!process.env.BOOKING_API_KEY;
+  const hasBooking    = !!process.env.BOOKING_API_KEY;
+  const hasExpedia    = !!process.env.EXPEDIA_API_KEY;
+  const hasAmadeus    = !!process.env.AMADEUS_API_KEY;
+  const hasHotelbeds  = !!process.env.HOTELBEDS_API_KEY;
 
-  // 2. Choose data source — priority: Booking+Expedia > Amadeus > Mock
+  // Priority order: Booking+Expedia > Booking > Expedia > Hotelbeds > Amadeus > Mock
   if (hasBooking && hasExpedia) {
     console.log('[SEARCH] Mode: Booking.com + Expedia (combined)');
     return searchCombined(quiz);
   }
   if (hasBooking) {
     console.log('[SEARCH] Mode: Booking.com');
-    return searchBookingCom(quiz).then(hotels => addAffiliateLinks(hotels, quiz));
+    return searchBookingCom(quiz).then(h => addAffiliateLinks(h, quiz));
   }
   if (hasExpedia) {
     console.log('[SEARCH] Mode: Expedia');
-    return searchExpedia(quiz).then(hotels => addAffiliateLinks(hotels, quiz));
+    return searchExpedia(quiz).then(h => addAffiliateLinks(h, quiz));
+  }
+  if (hasHotelbeds) {
+    console.log('[SEARCH] Mode: Hotelbeds — real hotel data');
+    return searchHotelbeds(quiz).then(h => addAffiliateLinks(h, quiz));
   }
   if (hasAmadeus) {
     console.log('[SEARCH] Mode: Amadeus');
-    return searchAmadeus(quiz).then(hotels => addAffiliateLinks(hotels, quiz));
+    return searchAmadeus(quiz).then(h => addAffiliateLinks(h, quiz));
   }
 
-  // Default: mock data
   console.log('[SEARCH] Mode: Mock data');
   return searchMock(quiz);
 }
