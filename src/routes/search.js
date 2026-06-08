@@ -14,6 +14,9 @@ const router = Router();
 // Body: quiz answers (see validateQuiz for full schema)
 // Returns: { hotels: [...], meta: { ... } }
 router.post('/search', async (req, res, next) => {
+  // Set longer timeout for hotel search (Hotelbeds can be slow)
+  req.setTimeout(60000);
+  res.setTimeout(60000);
   try {
     // 1. Validate incoming quiz data
     const { valid, error, quiz } = validateQuiz(req.body);
