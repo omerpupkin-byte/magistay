@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta name="agd-partner-manual-verification" />
+<meta name="agd-partner-manual-verification" />
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 
@@ -1539,14 +1540,18 @@ function buildFallbackLink(platform, hotel){
   // Expedia affiliate IDs
   var expAffcid='US.DIRECT.PHG.1101l431027.1100l68075';
   var expAfflid='1101lDpY8aoX';
+  // Booking.com CJ affiliate tracking link
+  var bookingCjLink='https://www.anrdoezrs.net/click-101769223-11891539';
+  // Agoda affiliate id
+  var agodaCid='1966785';
   switch(platform){
-    case 'bookingCom':  return 'https://www.booking.com/searchresults.html?ss='+name;
+    case 'bookingCom':  return bookingCjLink+'?url='+encodeURIComponent('https://www.booking.com/searchresults.html?ss='+name);
     case 'expedia':     return 'https://www.expedia.com/Hotel-Search?destination='+name+'&affcid='+expAffcid+'&afflid='+expAfflid+'&ref_id='+expAfflid;
     case 'hotelsCom':   return 'https://www.hotels.com/search.do?q='+name+'&affcid='+expAffcid+'&afflid='+expAfflid;
-    case 'agoda':       return 'https://www.agoda.com/search?city='+city;
+    case 'agoda':       return 'https://www.agoda.com/search?city='+city+'&cid='+agodaCid;
     case 'tripAdvisor': return 'https://www.tripadvisor.com/Search?q='+name;
     case 'kayak':       return 'https://www.kayak.com/hotels/'+city;
-    default:            return 'https://www.booking.com/searchresults.html?ss='+name;
+    default:            return bookingCjLink+'?url='+encodeURIComponent('https://www.booking.com/searchresults.html?ss='+name);
   }
 }
 
