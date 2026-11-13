@@ -41,16 +41,25 @@ export function livePricesEnabled() {
 
 // ── Public: add live prices to the final hotels ────────────────
 // `fetchJson` is injectable so tests run without the network.
-export async function addLivePrices(hotels, quiz, { fetchJson = serpApiFetch } = {}) {
+// `report`, when given, collects what was found for every hotel checked
+// (used by the check endpoint to see why a hotel was priced or dropped).
+export async function addLivePrices(hotels, quiz, { fetchJson = serpApiFetch, report = null } = {}) {
   if (!livePricesEnabled() || !hotels?.length) return hotels;
   if (!isDate(quiz.checkIn) || !isDate(quiz.checkOut)) return hotels;
 
   const results = await Promise.all(hotels.map(async (hotel) => {
     try {
       const live = await lookup(hotel, quiz, fetchJson);
+      report?.push({
+        hotel: hotel.name,
+        result: !live?.matched ? 'not found on Google Hotels' : live.offers.some(o => o.platform) ? 'priced' : 'no price on our platforms',
+        googleName: live?.googleName || null,
+        sellers: (live?.offers || []).map(o => ({ seller: o.seller, perNight: o.price, total: o.total, ours: !!o.platform })),
+      });
       return live ? applyLivePrices(hotel, live, quiz) : hotel;
     } catch (e) {
       console.error(`[LIVE PRICES] ${hotel.name}: ${String(e.message).slice(0, 200)}`);
+      report?.push({ hotel: hotel.name, result: 'lookup failed', error: String(e.message).slice(0, 120) });
       return hotel;
     }
   }));
@@ -67,17 +76,17 @@ export async function addLivePrices(hotels, quiz, { fetchJson = serpApiFetch } =
 // `show`. A hotel Google knows but none of our platforms sells on these
 // dates cannot be booked through us, so the next best match takes its
 // place. Hotels we could not check at all stay: unknown is not "sold out".
-export async function pickBookable(ranked, quiz, { show = 5, fetchJson = serpApiFetch } = {}) {
+export async function pickBookable(ranked, quiz, { show = 5, fetchJson = serpApiFetch, report = null } = {}) {
   if (!livePricesEnabled()) return ranked.slice(0, show);
 
   const unbookable = h => !!h.livePrices && h.livePrices.found === 0;
-  const first = await addLivePrices(ranked.slice(0, show), quiz, { fetchJson });
+  const first = await addLivePrices(ranked.slice(0, show), quiz, { fetchJson, report });
   let keep = first.filter(h => !unbookable(h));
 
   const missing = show - keep.length;
   const reserve = ranked.slice(show);
   if (missing > 0 && reserve.length > 0) {
-    const extra = await addLivePrices(reserve, quiz, { fetchJson });
+    const extra = await addLivePrices(reserve, quiz, { fetchJson, report });
     keep = keep.concat(extra.filter(h => !unbookable(h)).slice(0, missing));
     console.log(`[LIVE PRICES] ${missing} hotel(s) not bookable on our platforms, replaced ${keep.length - (show - missing)} from the reserve`);
   }

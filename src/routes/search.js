@@ -45,45 +45,92 @@ function setCache(key, data) {
   if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
 }
 
+// ── The search itself ─────────────────────────────────────────
+// Returns { status, body }. `report`, when given, collects the live-price
+// findings for every hotel that was checked.
+async function runSearch(input, report = null) {
+  const { valid, error, quiz } = validateQuiz(input);
+  if (!valid) return { status: 400, body: { error: `Invalid request: ${error}` } };
+  if (!quiz.destination) return { status: 400, body: { error: 'Invalid request: destination is required' } };
+
+  console.log(`[SEARCH] "${quiz.destination}" · ${quiz.adults}A ${quiz.children}C ${quiz.infants}I · ${quiz.checkIn}→${quiz.checkOut}`);
+
+  // 1. Candidates. AI suggestions are tailored to the traveller, so
+  //    only real supplier results are shared between travellers.
+  const key = tripKey(quiz);
+  let found = getCache(key);
+  const cached = !!found;
+  if (!found) {
+    found = await searchHotels(quiz);
+    if (!found.preMatched && found.hotels.length > 0) setCache(key, found);
+  }
+
+  if (found.hotels.length === 0) {
+    return { status: 200, body: { hotels: [], meta: meta(quiz, found, cached, 0) } };
+  }
+
+  // 2. Match to this traveller (AI suggestions arrive already matched).
+  //    With live prices on, rank a few extra so a hotel that cannot be
+  //    booked on these dates can be replaced by the next best match.
+  const live    = found.source !== 'mock' && livePricesEnabled();
+  const matched = found.preMatched
+    ? found.hotels
+    : await matchHotelsWithAI(quiz, found.hotels, { limit: live ? SHOW + RESERVE : SHOW });
+
+  // 3. Live price per booking platform; keeps the best SHOW that can be
+  //    booked. Demo data keeps its sample prices. Never throws.
+  const priced = live ? await pickBookable(matched, quiz, { show: SHOW, report }) : matched.slice(0, SHOW);
+
+  // 4. Review summaries, where real review text exists.
+  const hotels = (await summariseReviews(priced)).map(publicHotel);
+
+  return { status: 200, body: { hotels, meta: { ...meta(quiz, found, cached, hotels.length), livePrices: hotels.filter(h => h.priceType === 'live').length } } };
+}
+
 // ── POST /api/search ──────────────────────────────────────────
 router.post('/search', async (req, res, next) => {
   try {
-    const { valid, error, quiz } = validateQuiz(req.body);
-    if (!valid) return res.status(400).json({ error: `Invalid request: ${error}` });
-    if (!quiz.destination) return res.status(400).json({ error: 'Invalid request: destination is required' });
+    const { status, body } = await runSearch(req.body);
+    res.status(status).json(body);
+  } catch (err) {
+    next(err);
+  }
+});
 
-    console.log(`[SEARCH] "${quiz.destination}" · ${quiz.adults}A ${quiz.children}C ${quiz.infants}I · ${quiz.checkIn}→${quiz.checkOut}`);
+// ── GET /api/search/check ─────────────────────────────────────
+// The same search, opened as a plain address, with a compact answer:
+// what is shown, at what price per platform, where each button leads,
+// and what the live-price lookup found for every hotel it checked.
+// For checking the live site without clicking through the quiz.
+//   /api/search/check?destination=Madrid&checkIn=2026-11-24&checkOut=2026-11-27&adults=2
+router.get('/search/check', async (req, res, next) => {
+  try {
+    const q = req.query;
+    const list = v => (typeof v === 'string' && v ? v.split(',').map(x => x.trim()).filter(Boolean) : []);
+    const report = [];
+    const { status, body } = await runSearch({
+      destination: q.destination, checkIn: q.checkIn, checkOut: q.checkOut,
+      adults: Number(q.adults) || 2, children: Number(q.children) || 0, infants: Number(q.infants) || 0,
+      rooms: Number(q.rooms) || 1, childAges: list(q.childAges).map(Number),
+      stars: Number(q.stars) || 0, budget: q.budget, radiusKm: Number(q.radiusKm) || undefined,
+      priorities: list(q.priorities), purpose: list(q.purpose), vibes: list(q.vibes),
+      freeText: typeof q.freeText === 'string' ? q.freeText : '',
+    }, report);
+    if (status !== 200) return res.status(status).json(body);
 
-    // 1. Candidates. AI suggestions are tailored to the traveller, so
-    //    only real supplier results are shared between travellers.
-    const key = tripKey(quiz);
-    let found = getCache(key);
-    const cached = !!found;
-    if (!found) {
-      found = await searchHotels(quiz);
-      if (!found.preMatched && found.hotels.length > 0) setCache(key, found);
-    }
-
-    if (found.hotels.length === 0) {
-      return res.json({ hotels: [], meta: meta(quiz, found, cached, 0) });
-    }
-
-    // 2. Match to this traveller (AI suggestions arrive already matched).
-    //    With live prices on, rank a few extra so a hotel that cannot be
-    //    booked on these dates can be replaced by the next best match.
-    const live    = found.source !== 'mock' && livePricesEnabled();
-    const matched = found.preMatched
-      ? found.hotels
-      : await matchHotelsWithAI(quiz, found.hotels, { limit: live ? SHOW + RESERVE : SHOW });
-
-    // 3. Live price per booking platform; keeps the best SHOW that can be
-    //    booked. Demo data keeps its sample prices. Never throws.
-    const priced = live ? await pickBookable(matched, quiz, { show: SHOW }) : matched.slice(0, SHOW);
-
-    // 4. Review summaries, where real review text exists.
-    const hotels = (await summariseReviews(priced)).map(publicHotel);
-
-    res.json({ hotels, meta: { ...meta(quiz, found, cached, hotels.length), livePrices: hotels.filter(h => h.priceType === 'live').length } });
+    res.json({
+      meta: body.meta,
+      shown: body.hotels.map((h, i) => ({
+        rank: i + 1, name: h.name, matchScore: h.matchScore, matchedBy: h.matchedBy,
+        matchReason: h.matchReason, priceType: h.priceType, currency: h.currency,
+        bestPrice: h.bestPrice, supplierPrice: h.platforms?.hotelbeds?.price ?? null,
+        platforms: Object.fromEntries(['bookingCom', 'agoda', 'expedia', 'hotelsCom'].map(k => [k, h.platforms?.[k]
+          ? { perNight: h.platforms[k].price, total: h.platforms[k].total, directLink: !!h.platforms[k].direct }
+          : null])),
+        links: { bookingCom: h.affiliateLinks?.bookingCom, agoda: h.affiliateLinks?.agoda, expedia: h.affiliateLinks?.expedia, hotelsCom: h.affiliateLinks?.hotelsCom },
+      })),
+      livePriceLookups: report,
+    });
   } catch (err) {
     next(err);
   }

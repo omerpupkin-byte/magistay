@@ -34,7 +34,8 @@ function allowedOrigins() {
 const hits = new Map();
 const WINDOW_MS = 10 * 60 * 1000, MAX_SEARCHES = 20;
 app.use('/api/search', (req, res, next) => {
-  if (req.method !== 'POST') return next();
+  // POST /api/search and GET /api/search/check both run a full search.
+  if (req.method !== 'POST' && !(req.method === 'GET' && req.path === '/check')) return next();
   const now = Date.now();
   const recent = (hits.get(req.ip) || []).filter(t => now - t < WINDOW_MS);
   if (recent.length >= MAX_SEARCHES) {
@@ -62,7 +63,7 @@ app.get('/health', (_req, res) => {
   // Which pieces are switched on — booleans only, never the keys themselves.
   res.json({
     status:  'ok',
-    version: '0.3.2',
+    version: '0.3.3',
     mode:    process.env.ANTHROPIC_API_KEY ? 'ai' : 'mock',
     sources: {
       claude:    !!process.env.ANTHROPIC_API_KEY,
