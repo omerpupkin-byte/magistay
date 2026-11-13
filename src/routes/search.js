@@ -12,7 +12,7 @@ import { matchHotelsWithAI } from '../services/aiMatcher.js';
 import { summariseReviews }  from '../services/reviewSummariser.js';
 import { validateQuiz }      from '../utils/validateQuiz.js';
 import { hasClaude }         from '../services/claude.js';
-import { addLivePrices }     from '../services/livePrices.js';
+import { pickBookable, livePricesEnabled } from '../services/livePrices.js';
 
 const router = Router();
 
@@ -20,6 +20,9 @@ const router = Router();
 const cache = new Map();
 const CACHE_TTL = 30 * 60 * 1000;
 const CACHE_MAX = 200;
+
+const SHOW    = 5;   // hotels on the results page
+const RESERVE = 3;   // extra ranked hotels, used when one cannot be booked
 
 // Everything that changes which hotels (or which prices) come back.
 function tripKey(quiz) {
@@ -66,11 +69,16 @@ router.post('/search', async (req, res, next) => {
     }
 
     // 2. Match to this traveller (AI suggestions arrive already matched).
-    const matched = found.preMatched ? found.hotels : await matchHotelsWithAI(quiz, found.hotels);
+    //    With live prices on, rank a few extra so a hotel that cannot be
+    //    booked on these dates can be replaced by the next best match.
+    const live    = found.source !== 'mock' && livePricesEnabled();
+    const matched = found.preMatched
+      ? found.hotels
+      : await matchHotelsWithAI(quiz, found.hotels, { limit: live ? SHOW + RESERVE : SHOW });
 
-    // 3. Live price per booking platform, for the hotels we will show.
-    //    Demo data keeps its sample prices. Never throws.
-    const priced = found.source === 'mock' ? matched : await addLivePrices(matched, quiz);
+    // 3. Live price per booking platform; keeps the best SHOW that can be
+    //    booked. Demo data keeps its sample prices. Never throws.
+    const priced = live ? await pickBookable(matched, quiz, { show: SHOW }) : matched.slice(0, SHOW);
 
     // 4. Review summaries, where real review text exists.
     const hotels = (await summariseReviews(priced)).map(publicHotel);

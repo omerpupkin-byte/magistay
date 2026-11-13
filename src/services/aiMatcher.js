@@ -16,32 +16,36 @@ const MAX_RESULTS    = 5;
 const MAX_CANDIDATES = 20;   // sent to the AI; keeps the call fast
 
 // ── Main entry ────────────────────────────────────────────────
-export async function matchHotelsWithAI(quiz, hotels) {
+// `limit` is how many ranked hotels to return. The search asks for a few
+// more than it shows, so a hotel that turns out not to be bookable can be
+// replaced by the next best match.
+export async function matchHotelsWithAI(quiz, hotels, { limit = MAX_RESULTS } = {}) {
   if (hotels.length === 0) return [];
+  limit = Math.max(1, Math.min(limit, 10));
 
   // Deterministic baseline: used to shortlist, and as the fallback result.
   const baseline = hotels.map(h => baselineScore(quiz, h)).sort((a, b) => b.matchScore - a.matchScore);
 
   if (!hasClaude()) {
     console.log('[AI MATCHER] No API key — using rule-based scoring');
-    return baseline.slice(0, MAX_RESULTS).map(h => ({ ...h, matchedBy: 'rules' }));
+    return baseline.slice(0, limit).map(h => ({ ...h, matchedBy: 'rules' }));
   }
 
   const shortlist = baseline.slice(0, MAX_CANDIDATES);
   try {
     console.log(`[AI MATCHER] Calling Claude with ${shortlist.length} candidates...`);
-    const parsed = await askClaudeJSON(buildMatchPrompt(quiz, shortlist), { maxTokens: 3000 });
+    const parsed = await askClaudeJSON(buildMatchPrompt(quiz, shortlist, limit), { maxTokens: 600 * limit });
     const ranked = applyAIResult(quiz, shortlist, parsed.matches || []);
-    if (ranked.length > 0) return ranked.slice(0, MAX_RESULTS);
+    if (ranked.length > 0) return ranked.slice(0, limit);
     throw new Error('AI returned no usable matches');
   } catch (e) {
     console.error('[AI MATCHER] Falling back to rule-based scoring:', e.message);
-    return baseline.slice(0, MAX_RESULTS).map(h => ({ ...h, matchedBy: 'rules' }));
+    return baseline.slice(0, limit).map(h => ({ ...h, matchedBy: 'rules' }));
   }
 }
 
 // ── Prompt ────────────────────────────────────────────────────
-export function buildMatchPrompt(quiz, hotels) {
+export function buildMatchPrompt(quiz, hotels, limit = MAX_RESULTS) {
   const needs = listNeeds(quiz);
   return `You are the matching engine of Magistay, a hotel recommendation service. You act as a meticulous travel agent who reads the fine print.
 
@@ -52,7 +56,7 @@ THE CANDIDATE HOTELS (all have a room on these dates unless marked otherwise)
 ${hotels.map(formatHotelForPrompt).join('\n\n')}
 
 YOUR TASK
-Pick the ${Math.min(MAX_RESULTS, hotels.length)} hotels that best fit THIS traveller and rank them, best first.
+Pick the ${Math.min(limit, hotels.length)} hotels that best fit THIS traveller and rank them, best first.
 
 Judge fit the way a great agent would: who is travelling and why, the stated must-haves and needs, location for their plans, value against their budget, and guest rating. A hotel that misses a must-have should rank below one that meets it, unless everything else is far better.
 

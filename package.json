@@ -1,6 +1,6 @@
 {
   "name": "magistay-backend",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Magistay AI hotel matching backend",
   "main": "src/server.js",
   "type": "module",

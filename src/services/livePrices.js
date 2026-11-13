@@ -59,11 +59,31 @@ export async function addLivePrices(hotels, quiz, { fetchJson = serpApiFetch } =
   const direct = results.reduce((n, h) => n + Object.values(h.platforms || {}).filter(p => p.direct).length, 0);
   console.log(`[LIVE PRICES] ${priced}/${hotels.length} hotels priced from Google Hotels, ${direct} direct hotel-page links`);
 
-  // A hotel Google knows, with no price on any of our platforms for these
-  // dates, cannot be booked through us: show it after the ones that can.
-  if (priced === 0) return results;
-  const unbookable = h => h.livePrices && h.livePrices.found === 0;
-  return [...results.filter(h => !unbookable(h)), ...results.filter(unbookable)];
+  return results;
+}
+
+// ── Public: the hotels to show, all of them bookable ──────────
+// `ranked` is the matcher's list, best first, usually a few longer than
+// `show`. A hotel Google knows but none of our platforms sells on these
+// dates cannot be booked through us, so the next best match takes its
+// place. Hotels we could not check at all stay: unknown is not "sold out".
+export async function pickBookable(ranked, quiz, { show = 5, fetchJson = serpApiFetch } = {}) {
+  if (!livePricesEnabled()) return ranked.slice(0, show);
+
+  const unbookable = h => !!h.livePrices && h.livePrices.found === 0;
+  const first = await addLivePrices(ranked.slice(0, show), quiz, { fetchJson });
+  let keep = first.filter(h => !unbookable(h));
+
+  const missing = show - keep.length;
+  const reserve = ranked.slice(show);
+  if (missing > 0 && reserve.length > 0) {
+    const extra = await addLivePrices(reserve, quiz, { fetchJson });
+    keep = keep.concat(extra.filter(h => !unbookable(h)).slice(0, missing));
+    console.log(`[LIVE PRICES] ${missing} hotel(s) not bookable on our platforms, replaced ${keep.length - (show - missing)} from the reserve`);
+  }
+
+  // Nothing bookable anywhere: better the best matches, labelled, than an empty page.
+  return keep.length > 0 ? keep : first;
 }
 
 // ── One hotel ─────────────────────────────────────────────────

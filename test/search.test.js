@@ -245,7 +245,7 @@ test('breakfast is "included" only when a breakfast rate exists; thin ratings ea
 });
 
 // ── Live prices (Google Hotels via SerpApi) ───────────────────
-import { addLivePrices, parseOffers, sameHotel, nameSimilarity, applyLivePrices, _clearLivePriceCache } from '../src/services/livePrices.js';
+import { addLivePrices, pickBookable, parseOffers, sameHotel, nameSimilarity, applyLivePrices, _clearLivePriceCache } from '../src/services/livePrices.js';
 
 const rate = (night, total, taxes = true) => ({
   rate_per_night: taxes ? { extracted_lowest: night, extracted_before_taxes_fees: night - 20, extracted_after_taxes_fees: night } : { extracted_lowest: night },
@@ -398,17 +398,48 @@ test('direct links: anything that is not clearly the hotel page is refused', () 
   assert.equal(buildDirectLink('agoda', 'not a url', quiz), null);
 });
 
-test('hotels nobody on our platforms sells on these dates go last; links become direct', async () => {
+test('a hotel nobody on our platforms sells on these dates is replaced by the next match', async () => {
   process.env.SERPAPI_KEY = 'test';
   _clearLivePriceCache();
-  const sold = { ...arts, id: 'hotelbeds-9', name: 'VP Plaza Design', coords: { lat: 41.3869, lng: 2.1962 } };
-  const fetchJson = async (params) => params.q.startsWith('VP')
-    ? { type: 'hotel', name: 'VP Plaza Design', gps_coordinates: googleArts.gps_coordinates, prices: [] }
-    : { ...googleArts, prices: [{ source: 'Agoda', link: google('https://www.agoda.com/partners/partnersearch.aspx?hid=555'), ...rate(405, 2025) }] };
-  const out = await addLivePrices([sold, { ...arts, affiliateLinks: buildAllAffiliateLinks(arts, quiz) }], quiz, { fetchJson });
-  assert.deepEqual(out.map(h => h.name), ['Hotel Arts Barcelona', 'VP Plaza Design']);
+  const mk = (n, name) => ({ ...arts, id: 'hotelbeds-' + n, name, affiliateLinks: buildAllAffiliateLinks({ ...arts, name }, quiz) });
+  const ranked = [mk(1, 'Alpha Palace'), mk(2, 'Soldout Grand'), mk(3, 'Gamma House'), mk(4, 'Unknown Inn'), mk(5, 'Delta Rooms'), mk(6, 'Soldout Two'), mk(7, 'Reserve Seven'), mk(8, 'Reserve Eight')];
+  const asked = [];
+  const fetchJson = async (params) => {
+    const name = params.q.replace(', Barcelona', '');
+    asked.push(name);
+    if (name === 'Unknown Inn') throw new Error('timeout');
+    const prices = name.startsWith('Soldout') ? [] : [{ source: 'Agoda', link: google('https://www.agoda.com/partners/partnersearch.aspx?hid=555'), ...rate(405, 2025) }];
+    return { type: 'hotel', name, gps_coordinates: googleArts.gps_coordinates, prices };
+  };
+
+  const out = await pickBookable(ranked, quiz, { show: 5, fetchJson });
+  assert.deepEqual(out.map(h => h.name), ['Alpha Palace', 'Gamma House', 'Unknown Inn', 'Delta Rooms', 'Reserve Seven'],
+    'sold-out #2 is dropped, sold-out #6 is skipped, #7 fills the place; the unchecked hotel stays');
+  assert.equal(out[2].priceType, 'indicative');
   assert.equal(out[0].platforms.agoda.direct, true);
   assert.match(out[0].affiliateLinks.agoda, /partnersearch\.aspx\?.*hid=555.*cid=1966785/);
   assert.ok(!JSON.stringify(out).includes('google.com/travel/clk'), "Google's link never reaches the page");
+
+  // All five bookable: the reserve is never looked up.
+  _clearLivePriceCache(); asked.length = 0;
+  await pickBookable(ranked.filter(h => !h.name.startsWith('Soldout')), quiz, { show: 5, fetchJson });
+  assert.equal(asked.length, 5);
+
+  // Nothing bookable at all: the best matches are still shown.
+  _clearLivePriceCache();
+  const none = await pickBookable([mk(2, 'Soldout Grand'), mk(6, 'Soldout Two')], quiz, { show: 5, fetchJson });
+  assert.deepEqual(none.map(h => h.name), ['Soldout Grand', 'Soldout Two']);
+
+  // No key: just the top five, untouched.
   delete process.env.SERPAPI_KEY;
+  assert.deepEqual(await pickBookable(ranked, quiz, { show: 5, fetchJson }), ranked.slice(0, 5));
+});
+
+test('the matcher returns as many ranked hotels as asked', async () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({ ...arts, id: 'h' + i, name: 'Hotel ' + i, amenities: [], facilities: [], needsCheck: [] }));
+  const saved = process.env.ANTHROPIC_API_KEY; delete process.env.ANTHROPIC_API_KEY;
+  assert.equal((await matchHotelsWithAI(quiz, many)).length, 5);
+  assert.equal((await matchHotelsWithAI(quiz, many, { limit: 8 })).length, 8);
+  assert.match(buildMatchPrompt(quiz, many, 8), /Pick the 8 hotels/);
+  if (saved) process.env.ANTHROPIC_API_KEY = saved;
 });
