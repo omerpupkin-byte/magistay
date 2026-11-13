@@ -232,3 +232,14 @@ test('match prompt carries the brief and forbids guessing', () => {
   assert.match(prompt, /from 180 EUR\/night \(indicative\)/);
   assert.match(prompt, /Never guess "yes"/);
 });
+
+test('breakfast is "included" only when a breakfast rate exists; thin ratings earn no bonus', () => {
+  const served = { amenities: ['breakfast'], facilities: ['Breakfast room'] };
+  assert.equal(checkNeed('Breakfast included', served).status, 'unknown');
+  assert.equal(checkNeed('Breakfast included', { ...served, breakfastPrice: 120 }).status, 'yes');
+
+  const q = { ...quiz, priorities: [], specialNeeds: {}, infants: 0 };
+  const few  = baselineScore(q, { riScore: 10, totalReviews: 3,   amenities: [] });
+  const many = baselineScore(q, { riScore: 9.4, totalReviews: 900, amenities: [] });
+  assert.ok(many.matchScore > few.matchScore);
+});
