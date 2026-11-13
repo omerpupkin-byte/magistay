@@ -7,7 +7,6 @@
 //
 // Get your key at: console.cloud.google.com
 // Enable: Maps JavaScript API + Geocoding API
-// Free credit: $200/month (covers ~40,000 geocoding requests)
 
 // ── Built-in fallback for common cities ───────────────────────
 const CITY_COORDS = {
@@ -39,6 +38,10 @@ const CITY_COORDS = {
   'bangkok':      { lat: 13.7563, lng: 100.5018, city: 'Bangkok',      country: 'TH' },
   'tokyo':        { lat: 35.6762, lng: 139.6503, city: 'Tokyo',        country: 'JP' },
   'bali':         { lat: -8.3405, lng: 115.0920, city: 'Bali',         country: 'ID' },
+  // Islands and regions carry their size so the search radius can widen.
+  'crete':        { lat: 35.2401, lng: 24.8093,  city: 'Crete',        country: 'GR', spanKm: 260 },
+  'mallorca':     { lat: 39.6953, lng: 3.0176,   city: 'Mallorca',     country: 'ES', spanKm: 100 },
+  'tuscany':      { lat: 43.7711, lng: 11.2486,  city: 'Tuscany',      country: 'IT', spanKm: 240 },
 };
 
 // ── Main entry ────────────────────────────────────────────────
@@ -87,7 +90,26 @@ async function geocodeWithGoogle(destination) {
     city:    city || destination,
     country: country,
     formatted: result.formatted_address,
+    types:   result.types || [],
+    // Size of the place. A city is ~10-30 km across, an island or a
+    // region can be 100+ km — the hotel search widens its radius to match.
+    spanKm:  viewportSpanKm(result.geometry.viewport),
   };
+}
+
+function viewportSpanKm(viewport) {
+  const ne = viewport?.northeast, sw = viewport?.southwest;
+  if (!ne || !sw) return null;
+  return Math.round(distanceKm(ne.lat, ne.lng, sw.lat, sw.lng));
+}
+
+// ── Great-circle distance in km ───────────────────────────────
+export function distanceKm(lat1, lng1, lat2, lng2) {
+  if ([lat1, lng1, lat2, lng2].some(v => v == null || Number.isNaN(Number(v)))) return null;
+  const rad = d => (d * Math.PI) / 180;
+  const dLat = rad(lat2 - lat1), dLng = rad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 // ── Fallback: built-in city table ─────────────────────────────

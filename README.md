@@ -1,134 +1,93 @@
-# Magistay Backend
+# Magistay
 
-Node.js + Express server that powers the Magistay AI hotel matching engine.
+A hotel matcher. The traveller answers a short quiz (who is coming, why, where, when, what matters); the server finds hotels with rooms on those dates, checks each one against the traveller's list, and returns the best five — each with a reason, a need-by-need checklist and booking links that carry our affiliate ids.
 
-## Quick start
+- `magistay.html` — the whole site (served by Vercel at magistay.com)
+- `src/` — the API server (runs on Railway)
+
+## Run it locally
 
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Copy environment file
-cp .env.example .env
-
-# 3. Start the server (mock mode — no API keys needed)
-npm run dev
-
-# Server runs at http://localhost:3001
-# Health check: http://localhost:3001/health
+cp .env.example .env      # fill in the keys you have
+npm run dev               # http://localhost:3001  ·  health: /health
+npm test                  # no keys or network needed
 ```
 
-## Modes
+Open `magistay.html` through a local web server (for example `python -m http.server 8080`, then http://localhost:8080/magistay.html). Opened from `localhost`, the page talks to the local server; anywhere else it talks to Railway.
 
-| Mode | What it does |
-|------|-------------|
-| **Mock mode** (default) | Returns realistic hotel data and scoring with no API keys. Perfect for development. |
-| **AI mode** | Set `ANTHROPIC_API_KEY` in `.env` — Claude scores hotels and summarises reviews. |
-| **Live mode** | Add `BOOKING_API_KEY` + `EXPEDIA_API_KEY` for real hotel data. |
+## Where the hotels come from
+
+`src/services/hotelSearch.js` picks the first source that returns hotels:
+
+| Source | Needs | What it gives |
+|---|---|---|
+| Booking.com Demand API | `BOOKING_API_KEY` (Managed Affiliate Partners only — not approved yet) | — |
+| Expedia Rapid API | `EXPEDIA_API_KEY` (not approved yet) | — |
+| **Hotelbeds** | `HOTELBEDS_API_KEY` + `HOTELBEDS_API_SECRET` | Live availability, wholesale rates, photos, facilities, TripAdvisor rating |
+| **AI suggestions** | `ANTHROPIC_API_KEY` | Well-known hotels from the model's general knowledge. No price, no availability, no rating. Used when a supplier has nothing for the destination or is down. |
+| Demo data | nothing | Built-in sample hotels, for development without any keys |
+
+The response says which one was used in `meta.source`, and the page tells the traveller.
+
+## Rules the code keeps about facts
+
+- A need is marked **confirmed** only when the hotel's own data says so. Otherwise it is "not confirmed — ask the hotel". Nothing is guessed.
+- Guest ratings, review summaries and photos are shown only when they are real. A hotel without them is shown without them.
+- Hotelbeds rates are wholesale rates, shown as **indicative**. The exact price is on the booking platform.
+- AI suggestions are labelled as suggestions, not live inventory.
+
+## Booking links
+
+`src/services/affiliateLinks.js` builds a link per platform with the traveller's dates and guests filled in:
+
+| Platform | Tracking |
+|---|---|
+| Booking.com | CJ deep link (`BOOKING_CJ_LINK`) |
+| Agoda | `cid` (`AGODA_AFFILIATE_ID`) |
+| Expedia, Hotels.com | `affcid` + `afflid` |
+
+The ids are public by nature and have defaults in the file; the environment variables override them.
 
 ## API
 
-### `POST /api/search`
+`POST /api/search`
 
-Send quiz answers, receive matched hotels.
-
-**Request body:**
 ```json
 {
-  "adults": 2,
-  "children": 0,
-  "infants": 1,
-  "rooms": 1,
-  "destination": "Barcelona",
-  "radiusKm": 5,
-  "dateFlexibility": "exact",
-  "checkIn": "2025-06-12",
-  "checkOut": "2025-06-17",
-  "budget": "80_150",
-  "stars": 4,
-  "vibes": ["beach"],
-  "priorities": ["breakfast", "crib"],
-  "specialNeeds": { "babies": ["crib"] },
-  "freeText": "We have an infant and need elevator access throughout."
+  "adults": 2, "children": 1, "infants": 1, "rooms": 1, "childAges": [5],
+  "purpose": ["Family holiday"],
+  "destination": "Crete, Greece", "landmark": "", "radiusKm": 5,
+  "checkIn": "2027-07-15", "checkOut": "2027-07-20",
+  "stars": 0, "budget": "150_250",
+  "vibes": ["Beach & relax"],
+  "priorities": ["Pool", "Breakfast included"],
+  "specialNeeds": { "babies_young_children": ["Crib / cot available"] },
+  "freeText": "It's my wife's birthday and she loves quiet places."
 }
 ```
 
-**Response:**
-```json
-{
-  "hotels": [
-    {
-      "id": "bcn-001",
-      "name": "Hotel Arts Barcelona",
-      "matchScore": 98,
-      "matchReason": "Beachfront access, crib confirmed, elevator throughout...",
-      "riScore": 8.7,
-      "riConfidence": "high",
-      "bestPrice": { "platform": "hotelsCom", "price": 128 },
-      "bestFlex": { "platform": "bookingCom", "price": 159 },
-      "reviews": {
-        "loves": [
-          { "text": "Stunning sea views", "frequency": "847×", "recency": "month" }
-        ],
-        "complaints": [
-          { "text": "Beach crowded at midday", "frequency": "334×", "recency": "month" }
-        ]
-      }
-    }
-  ],
-  "meta": {
-    "count": 3,
-    "destination": "Barcelona",
-    "source": "mock"
-  }
-}
-```
+Returns `{ hotels: [...], meta: { source, count, candidates, matching, ... } }`. Each hotel has `matchScore`, `matchReason`, `needsCheck` (`yes` / `no` / `unknown` / `likely`), `highlights`, `photos`, `gallery`, `bestPrice`, `bestFlex`, `currency`, `riScore`, `affiliateLinks`.
 
-## File structure
+Searches are limited to 20 per visitor per 10 minutes. Supplier results are cached for 30 minutes; the matching is done fresh for every traveller.
+
+## Files
 
 ```
-src/
-  server.js              # Express app — entry point
-  routes/
-    search.js            # POST /api/search
-  services/
-    hotelSearch.js       # Find candidate hotels (mock → real API)
-    aiMatcher.js         # Claude scores + explains each hotel
-    reviewSummariser.js  # Claude extracts review themes
-  data/
-    mockHotels.js        # Realistic hotel data for Barcelona, Lisbon, Rome
-  utils/
-    validateQuiz.js      # Validates + normalises quiz payload
-```
-
-## Adding real APIs (when ready)
-
-### Anthropic (Claude)
-1. Get key at console.anthropic.com
-2. Add to `.env`: `ANTHROPIC_API_KEY=sk-ant-...`
-3. Restart server — AI mode activates automatically
-
-### Booking.com
-1. Apply at developers.booking.com
-2. Add keys to `.env`
-3. Uncomment `searchBookingCom()` in `hotelSearch.js`
-
-### Expedia
-1. Sign up at developers.expediagroup.com
-2. Add keys to `.env`
-3. Add `searchExpedia()` function in `hotelSearch.js`
-
-## Deploy to Railway
-
-```bash
-# Install Railway CLI
-npm install -g @railway/cli
-
-# Login and deploy
-railway login
-railway init
-railway up
-
-# Set environment variables in Railway dashboard
-# → Variables → add all keys from .env
+magistay.html                 the site
+src/server.js                 Express app, CORS, rate limit, /health
+src/routes/search.js          POST /api/search
+src/services/
+  hotelSearch.js              picks the hotel source
+  hotelbedsAPI.js             Hotelbeds availability + content
+  aiCandidates.js             AI suggestions when no supplier has inventory
+  aiMatcher.js                ranking + reasons + checklist (Claude, or rules without a key)
+  travellerProfile.js         quiz → brief for the AI, and the list of needs to check
+  affiliateLinks.js           booking links with affiliate ids
+  reviewSummariser.js         review themes, only from real review text
+  geocoding.js                destination → coordinates and size
+  claude.js                   shared Claude client
+  bookingAPI.js, expediaAPI.js   dormant until those partners approve
+src/data/mockHotels.js        demo hotels
+test/search.test.js           tests
 ```

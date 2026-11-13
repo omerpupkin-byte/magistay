@@ -4,27 +4,16 @@
 //   - What keeps coming up as a problem (with frequency counts)
 //   - Recency tags (last 30 days / last 90 days)
 //
-// Falls back to pre-built mock summaries if no API key.
+// Hotels with no review text get an empty summary (nothing is invented).
 // Runs in parallel across all hotels for speed.
 
-import Anthropic from '@anthropic-ai/sdk';
-
-const client = process.env.ANTHROPIC_API_KEY
-  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  : null;
+import { askClaudeJSON, hasClaude } from './claude.js';
 
 // ── Main entry ────────────────────────────────────────────────
+// Only hotels that come with real review text get a summary. A hotel
+// without review text gets an empty summary — never an invented one.
 export async function summariseReviews(hotels) {
-  if (!client) {
-    console.log('[REVIEWS] No API key — using mock summaries');
-    return hotels.map(h => ({ ...h, reviews: mockSummary(h) }));
-  }
-
-  // Run all hotels in parallel
-  const results = await Promise.all(
-    hotels.map(h => summariseHotel(h))
-  );
-  return results;
+  return Promise.all(hotels.map(h => summariseHotel(h)));
 }
 
 // ── Summarise one hotel ───────────────────────────────────────
@@ -33,29 +22,25 @@ async function summariseHotel(hotel) {
     return { ...hotel, reviews: emptyReviews() };
   }
 
+  // Built-in demo hotels (local development only) have canned summaries.
+  if (!hasClaude()) {
+    return { ...hotel, reviews: hotel.source === 'mock' ? mockSummary(hotel) : emptyReviews() };
+  }
+
   try {
-    const prompt = buildReviewPrompt(hotel);
-    const message = await client.messages.create({
-      model:      'claude-sonnet-4-5',
-      max_tokens: 1024,
-      messages: [{ role: 'user', content: prompt }],
-    });
-
-    const raw    = message.content[0]?.text || '';
-    const parsed = JSON.parse(extractJSON(raw));
-
+    const parsed = await askClaudeJSON(buildReviewPrompt(hotel), { maxTokens: 1024 });
     return {
       ...hotel,
       reviews: {
-        loves:     parsed.loves    || [],
+        loves:      parsed.loves      || [],
         complaints: parsed.complaints || [],
         totalReviews: hotel.totalReviews,
-        source:    'ai',
+        source:     'ai',
       },
     };
   } catch (e) {
     console.error(`[REVIEWS] Error for ${hotel.id}:`, e.message);
-    return { ...hotel, reviews: mockSummary(hotel) };
+    return { ...hotel, reviews: emptyReviews() };
   }
 }
 
@@ -72,24 +57,24 @@ Extract:
 1. Up to 5 things guests keep LOVING (recurring positive themes)
 2. Up to 4 things that keep coming up as PROBLEMS or caveats
 
-For each item, estimate how often it is mentioned (as a multiplier like "mentioned 847×").
+For each item, count how many of the reviews above mention it and report it as "N×" (e.g. "3×"). Count only what is in the reviews provided — never extrapolate.
 Also assign a recency tag: "month" (feels recent/current) or "quarter" (older but still relevant).
 
 Return ONLY valid JSON:
 {
   "loves": [
-    { "text": "Stunning sea views", "frequency": "847×", "recency": "month" },
-    { "text": "Exceptional staff", "frequency": "612×", "recency": "month" }
+    { "text": "Stunning sea views", "frequency": "4×", "recency": "month" },
+    { "text": "Exceptional staff", "frequency": "3×", "recency": "month" }
   ],
   "complaints": [
-    { "text": "Beach crowded at midday", "frequency": "334×", "recency": "month" },
-    { "text": "Parking very limited", "frequency": "278×", "recency": "quarter" }
+    { "text": "Beach crowded at midday", "frequency": "2×", "recency": "month" },
+    { "text": "Parking very limited", "frequency": "1×", "recency": "quarter" }
   ]
 }
 
 Rules:
 - Keep each item to 3–5 words. Concise.
-- frequency should be realistic based on how often the theme appears in the reviews provided.
+- frequency is the actual count of reviews above that mention the theme.
 - recency "month" = this issue/feature feels current; "quarter" = mentioned but may be improving.`;
 }
 
@@ -171,7 +156,8 @@ function mockSummary(hotel) {
     },
   };
 
-  const summary = summaries[hotel.id] || defaultSummary();
+  const summary = summaries[hotel.id];
+  if (!summary) return emptyReviews();
   return {
     ...summary,
     totalReviews: hotel.totalReviews,
@@ -179,25 +165,6 @@ function mockSummary(hotel) {
   };
 }
 
-function defaultSummary() {
-  return {
-    loves: [
-      { text: 'Great location',    frequency: '124×', recency: 'month' },
-      { text: 'Friendly staff',    frequency: '98×',  recency: 'month' },
-      { text: 'Good breakfast',    frequency: '67×',  recency: 'quarter' },
-    ],
-    complaints: [
-      { text: 'Can get noisy',     frequency: '45×',  recency: 'quarter' },
-      { text: 'Parking limited',   frequency: '32×',  recency: 'quarter' },
-    ],
-  };
-}
-
 function emptyReviews() {
   return { loves: [], complaints: [], totalReviews: 0, source: 'empty' };
-}
-
-function extractJSON(text) {
-  const match = text.match(/\{[\s\S]*\}/);
-  return match ? match[0] : text;
 }

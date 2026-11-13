@@ -11,8 +11,40 @@ const app  = express();
 const PORT = process.env.PORT || 3001;
 
 // ── Middleware ─────────────────────────────────────────────────
-app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
-app.use(express.json());
+app.set('trust proxy', 1);            // Railway sits behind a proxy; needed for real client IPs
+app.use(cors({ origin: allowedOrigins() }));
+app.use(express.json({ limit: '50kb' }));
+
+// FRONTEND_URL may list several origins, comma-separated. The www and
+// non-www form of each is accepted, so either address of the site works.
+function allowedOrigins() {
+  const raw = (process.env.FRONTEND_URL || '').split(',').map(s => s.trim().replace(/\/$/, '')).filter(Boolean);
+  if (raw.length === 0) return '*';
+  const all = new Set();
+  for (const origin of raw) {
+    all.add(origin);
+    all.add(origin.includes('://www.') ? origin.replace('://www.', '://') : origin.replace('://', '://www.'));
+  }
+  return [...all];
+}
+
+// ── Rate limit on search ───────────────────────────────────────
+// Every search spends supplier quota and AI credit, so cap how many one
+// visitor can run: 20 per 10 minutes.
+const hits = new Map();
+const WINDOW_MS = 10 * 60 * 1000, MAX_SEARCHES = 20;
+app.use('/api/search', (req, res, next) => {
+  if (req.method !== 'POST') return next();
+  const now = Date.now();
+  const recent = (hits.get(req.ip) || []).filter(t => now - t < WINDOW_MS);
+  if (recent.length >= MAX_SEARCHES) {
+    return res.status(429).json({ error: 'Too many searches — please try again in a few minutes.' });
+  }
+  recent.push(now);
+  hits.set(req.ip, recent);
+  if (hits.size > 5000) hits.delete(hits.keys().next().value);
+  next();
+});
 
 // ── Request logger (dev only) ──────────────────────────────────
 if (process.env.NODE_ENV !== 'production') {
@@ -27,10 +59,19 @@ app.use('/api', searchRouter);
 
 // ── Health check ───────────────────────────────────────────────
 app.get('/health', (_req, res) => {
+  // Which pieces are switched on — booleans only, never the keys themselves.
   res.json({
     status:  'ok',
-    version: '0.1.0',
+    version: '0.2.0',
     mode:    process.env.ANTHROPIC_API_KEY ? 'ai' : 'mock',
+    sources: {
+      claude:    !!process.env.ANTHROPIC_API_KEY,
+      geocoding: !!process.env.GOOGLE_MAPS_API_KEY,
+      hotelbeds: !!process.env.HOTELBEDS_API_KEY,
+      hotelbedsEnv: process.env.HOTELBEDS_ENV === 'production' ? 'production' : 'test',
+      booking:   !!process.env.BOOKING_API_KEY,
+      expedia:   !!process.env.EXPEDIA_API_KEY,
+    },
     ts:      new Date().toISOString(),
   });
 });

@@ -1,23 +1,32 @@
 // ─── routes/search.js ─────────────────────────────────────────
-// Single endpoint: POST /api/search
-// Orchestrates: hotel search → AI matching → review summarisation
+// POST /api/search
+// quiz → candidate hotels → AI matching → response
+//
+// The supplier search (slow, quota-limited) is cached by trip.
+// The matching is NOT cached: two travellers going to the same place on
+// the same dates want different hotels.
 
-import { Router }           from 'express';
-import { searchHotels }     from '../services/hotelSearch.js';
+import { Router }            from 'express';
+import { searchHotels }      from '../services/hotelSearch.js';
 import { matchHotelsWithAI } from '../services/aiMatcher.js';
 import { summariseReviews }  from '../services/reviewSummariser.js';
 import { validateQuiz }      from '../utils/validateQuiz.js';
+import { hasClaude }         from '../services/claude.js';
 
 const router = Router();
 
-// ── Simple in-memory cache ─────────────────────────────────────
-// Key: destination+checkIn+checkOut+adults+budget
-// TTL: 30 minutes
+// ── Candidate cache ───────────────────────────────────────────
 const cache = new Map();
 const CACHE_TTL = 30 * 60 * 1000;
+const CACHE_MAX = 200;
 
-function getCacheKey(quiz) {
-  return `${quiz.destination}|${quiz.checkIn}|${quiz.checkOut}|${quiz.adults}|${quiz.budget}|${quiz.stars}`;
+// Everything that changes which hotels (or which prices) come back.
+function tripKey(quiz) {
+  return [
+    quiz.destination.toLowerCase(), quiz.checkIn, quiz.checkOut,
+    quiz.adults, quiz.children, quiz.infants, quiz.rooms,
+    quiz.childAges.join('.'), quiz.radiusKm, quiz.stars,
+  ].join('|');
 }
 
 function getCache(key) {
@@ -29,69 +38,67 @@ function getCache(key) {
 
 function setCache(key, data) {
   cache.set(key, { data, ts: Date.now() });
-  // Limit cache size
-  if (cache.size > 100) {
-    const firstKey = cache.keys().next().value;
-    cache.delete(firstKey);
-  }
+  if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
 }
 
-// POST /api/search
-// Body: quiz answers (see validateQuiz for full schema)
-// Returns: { hotels: [...], meta: { ... } }
+// ── POST /api/search ──────────────────────────────────────────
 router.post('/search', async (req, res, next) => {
   try {
-    // 1. Validate incoming quiz data
     const { valid, error, quiz } = validateQuiz(req.body);
-    if (!valid) {
-      return res.status(400).json({ error: `Invalid request: ${error}` });
+    if (!valid) return res.status(400).json({ error: `Invalid request: ${error}` });
+    if (!quiz.destination) return res.status(400).json({ error: 'Invalid request: destination is required' });
+
+    console.log(`[SEARCH] "${quiz.destination}" · ${quiz.adults}A ${quiz.children}C ${quiz.infants}I · ${quiz.checkIn}→${quiz.checkOut}`);
+
+    // 1. Candidates. AI suggestions are tailored to the traveller, so
+    //    only real supplier results are shared between travellers.
+    const key = tripKey(quiz);
+    let found = getCache(key);
+    const cached = !!found;
+    if (!found) {
+      found = await searchHotels(quiz);
+      if (!found.preMatched && found.hotels.length > 0) setCache(key, found);
     }
 
-    console.log(`[SEARCH] Destination: "${quiz.destination}" · ${quiz.adults} adults · ${quiz.infants} infants`);
-
-    // Check cache first
-    const cacheKey = getCacheKey(quiz);
-    const cached = getCache(cacheKey);
-    if (cached) {
-      console.log(`[SEARCH] Cache hit for "${quiz.destination}"`);
-      return res.json({ ...cached, meta: { ...cached.meta, source: 'cache' } });
+    if (found.hotels.length === 0) {
+      return res.json({ hotels: [], meta: meta(quiz, found, cached, 0) });
     }
 
-    // 2. Find candidate hotels (mock or real API)
-    const candidates = await searchHotels(quiz);
-    console.log(`[SEARCH] Found ${candidates.length} candidates`);
+    // 2. Match to this traveller (AI suggestions arrive already matched).
+    const matched = found.preMatched ? found.hotels : await matchHotelsWithAI(quiz, found.hotels);
 
-    if (candidates.length === 0) {
-      return res.json({ hotels: [], meta: { count: 0, source: 'search' } });
-    }
+    // 3. Review summaries, where real review text exists.
+    const hotels = (await summariseReviews(matched)).map(publicHotel);
 
-    // 3. AI matching — score + rank + explain
-    const matched = await matchHotelsWithAI(quiz, candidates);
-    console.log(`[SEARCH] AI matched top ${matched.length} hotels`);
-
-    // 4. Review summarisation (runs in parallel for speed)
-    const withReviews = await summariseReviews(matched);
-
-    // 5. Save to cache and return
-    const result = {
-      hotels: withReviews,
-      meta: {
-        count:       withReviews.length,
-        destination: quiz.destination,
-        nights:      quiz.nights || null,
-        source:      process.env.ANTHROPIC_API_KEY ? 'ai' : 'mock',
-        ts:          new Date().toISOString(),
-      },
-    };
-    setCache(cacheKey, result);
-    res.json(result);
-
+    res.json({ hotels, meta: meta(quiz, found, cached, hotels.length) });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /api/search/test — quick sanity check without quiz submission
+function meta(quiz, found, cached, count) {
+  return {
+    count,
+    destination: quiz.destination,
+    checkIn:     quiz.checkIn,
+    checkOut:    quiz.checkOut,
+    nights:      quiz.nights || null,
+    // hotelbeds | booking | expedia | ai_knowledge | mock | none
+    source:      found.source,
+    candidates:  found.hotels.length,
+    matching:    hasClaude() ? 'ai' : 'rules',
+    cached,
+    ts:          new Date().toISOString(),
+  };
+}
+
+// Drop internal fields the page does not need.
+function publicHotel(h) {
+  const { rawReviews, facilities, ...rest } = h;
+  return { ...rest, facilities: (facilities || []).slice(0, 40) };
+}
+
+// GET /api/search/test — quick sanity check
 router.get('/search/test', (_req, res) => {
   res.json({ ok: true, message: 'Search route is alive' });
 });

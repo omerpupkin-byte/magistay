@@ -1,133 +1,87 @@
 // ─── services/hotelSearch.js ───────────────────────────────────
-// Hotel search orchestrator.
+// Finds candidate hotels for a quiz. Picks the best source available:
 //
-// MODE SELECTION (automatic based on environment variables):
+//   1. Booking.com Demand API / Expedia Rapid   (when their keys are set)
+//   2. Hotelbeds                                (HOTELBEDS_API_KEY)
+//   3. AI suggestions from general knowledge    (when a supplier has
+//      nothing for the destination, fails, or none is configured)
+//   4. Built-in demo hotels                     (no keys at all — local dev only)
 //
-//   Mock mode     → no API keys needed, uses built-in data
-//   Expedia mode  → set EXPEDIA_API_KEY + EXPEDIA_API_SECRET
-//   Booking mode  → set BOOKING_API_KEY + BOOKING_API_SECRET
-//   Combined mode → set both → merges results, best coverage
-//
-// Switch modes by adding keys to Railway Variables.
-// Zero frontend changes required in any mode.
+// Returns { hotels, source, preMatched }. `source` travels all the way to
+// the page so it can tell the traveller what kind of data they are seeing.
 
-import { getHotelsByCity, computeRI, MOCK_HOTELS } from '../data/mockHotels.js';
-import { geocode }            from './geocoding.js';
-import { searchExpedia }      from './expediaAPI.js';
-import { searchBookingCom, buildAllAffiliateLinks } from './bookingAPI.js';
-import { searchAmadeus }      from './amadeusAPI.js';
-import { searchHotelbeds }    from './hotelbedsAPI.js';
+import { getHotelsByCity, computeRI } from '../data/mockHotels.js';
+import { geocode }               from './geocoding.js';
+import { searchExpedia }         from './expediaAPI.js';
+import { searchBookingCom }      from './bookingAPI.js';
+import { searchHotelbeds }       from './hotelbedsAPI.js';
+import { buildAllAffiliateLinks } from './affiliateLinks.js';
+import { suggestHotelsFromKnowledge, aiFallbackEnabled } from './aiCandidates.js';
 
 // ── Main entry point ───────────────────────────────────────────
 export async function searchHotels(quiz) {
-  const coords = await geocode(quiz.destination);
-  quiz.coords  = coords;
+  quiz.coords = await geocode(quiz.destination);
 
-  const hasBooking    = !!process.env.BOOKING_API_KEY;
-  const hasExpedia    = !!process.env.EXPEDIA_API_KEY;
-  const hasAmadeus    = !!process.env.AMADEUS_API_KEY;
-  const hasHotelbeds  = !!process.env.HOTELBEDS_API_KEY;
-
-  // Priority order: Booking+Expedia > Booking > Expedia > Hotelbeds > Amadeus > Mock
-  if (hasBooking && hasExpedia) {
-    console.log('[SEARCH] Mode: Booking.com + Expedia (combined)');
-    return searchCombined(quiz);
-  }
-  if (hasBooking) {
-    console.log('[SEARCH] Mode: Booking.com');
-    return searchBookingCom(quiz).then(h => addAffiliateLinks(h, quiz));
-  }
-  if (hasExpedia) {
-    console.log('[SEARCH] Mode: Expedia');
-    return searchExpedia(quiz).then(h => addAffiliateLinks(h, quiz));
-  }
-  if (hasHotelbeds) {
-    console.log('[SEARCH] Mode: Hotelbeds — real hotel data');
-    return searchHotelbeds(quiz).then(h => addAffiliateLinks(h, quiz));
-  }
-  if (hasAmadeus) {
-    console.log('[SEARCH] Mode: Amadeus');
-    return searchAmadeus(quiz).then(h => addAffiliateLinks(h, quiz));
-  }
-
-  console.log('[SEARCH] Mode: Mock data');
-  return searchMock(quiz);
-}
-
-// ── Combined search: merge Booking + Expedia ───────────────────
-async function searchCombined(quiz) {
-  const [bookingResults, expediaResults] = await Promise.allSettled([
-    searchBookingCom(quiz),
-    searchExpedia(quiz),
-  ]);
-
-  const booking = bookingResults.status === 'fulfilled' ? bookingResults.value : [];
-  const expedia = expediaResults.status === 'fulfilled' ? expediaResults.value : [];
-
-  // Merge by name — if same hotel appears in both, merge platform data
-  const merged = mergeHotelResults(booking, expedia);
-  return addAffiliateLinks(merged, quiz);
-}
-
-// ── Merge hotel results from multiple sources ──────────────────
-function mergeHotelResults(booking, expedia) {
-  const map = new Map();
-
-  for (const h of booking) {
-    map.set(normaliseHotelName(h.name), h);
-  }
-
-  for (const h of expedia) {
-    const key = normaliseHotelName(h.name);
-    if (map.has(key)) {
-      // Merge platform data
-      const existing = map.get(key);
-      existing.platforms = { ...existing.platforms, ...h.platforms };
-      // Recompute RI with combined reviews
-      const ri = computeRI(existing.platforms);
-      existing.riScore      = ri.score;
-      existing.riConfidence = ri.confidence;
-      existing.totalReviews = ri.totalReviews;
-    } else {
-      map.set(key, h);
+  // "Near the old port" — search around the landmark instead of the
+  // centre of the destination, and measure distances from it.
+  if (quiz.landmark) {
+    const spot = await geocode(`${quiz.landmark}, ${quiz.destination}`);
+    if (spot?.lat != null) {
+      quiz.coords = { ...spot, city: quiz.coords?.city || spot.city, country: quiz.coords?.country || spot.country, spanKm: null, label: quiz.landmark };
     }
   }
 
-  return Array.from(map.values());
+  const suppliers = [];
+  if (process.env.BOOKING_API_KEY)   suppliers.push(['booking',   searchBookingCom]);
+  if (process.env.EXPEDIA_API_KEY)   suppliers.push(['expedia',   searchExpedia]);
+  if (process.env.HOTELBEDS_API_KEY) suppliers.push(['hotelbeds', searchHotelbeds]);
+
+  // Live inventory first.
+  for (const [name, search] of suppliers) {
+    try {
+      const hotels = await search(quiz);
+      if (hotels.length > 0) {
+        console.log(`[SEARCH] Source: ${name} (${hotels.length} hotels)`);
+        return { hotels: withLinks(hotels, quiz), source: name, preMatched: false };
+      }
+      console.log(`[SEARCH] ${name} returned no hotels for "${quiz.destination}"`);
+    } catch (e) {
+      console.error(`[SEARCH] ${name} failed:`, e.message.slice(0, 300));
+    }
+  }
+
+  // No live inventory — AI suggestions, clearly labelled as such.
+  if (aiFallbackEnabled()) {
+    try {
+      const hotels = await suggestHotelsFromKnowledge(quiz);
+      return { hotels: withLinks(hotels, quiz), source: 'ai_knowledge', preMatched: true };
+    } catch (e) {
+      console.error('[SEARCH] AI suggestions failed:', e.message.slice(0, 300));
+      return { hotels: [], source: 'none', preMatched: true };
+    }
+  }
+
+  // Nothing configured at all: demo data for local development.
+  if (suppliers.length === 0) {
+    console.log('[SEARCH] Source: built-in demo data (no API keys configured)');
+    return { hotels: withLinks(searchMock(quiz), quiz), source: 'mock', preMatched: false };
+  }
+
+  return { hotels: [], source: 'none', preMatched: false };
 }
 
-function normaliseHotelName(name) {
-  return name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20);
+function withLinks(hotels, quiz) {
+  return hotels.map(h => ({ ...h, affiliateLinks: buildAllAffiliateLinks(h, quiz) }));
 }
 
-// ── Add affiliate links to hotel objects ───────────────────────
-function addAffiliateLinks(hotels, quiz) {
-  return hotels.map(h => ({
-    ...h,
-    affiliateLinks: buildAllAffiliateLinks(h, quiz),
-  }));
-}
-
-// ── Mock search (no API keys) ──────────────────────────────────
+// ── Demo search (no API keys) ──────────────────────────────────
 function searchMock(quiz) {
-  const { destination, budget, stars, radiusKm = 10 } = quiz;
-
-  let hotels = destination
-    ? getHotelsByCity(destination)
-    : MOCK_HOTELS;
-
-  if (stars && stars > 0) hotels = hotels.filter(h => h.stars >= stars);
-  if (budget && budget !== 'any') hotels = hotels.filter(h => matchesBudget(h, budget));
-  if (radiusKm) hotels = hotels.filter(h => h.distanceKm <= radiusKm);
-
-  return hotels.map(h => ({
-    ...normaliseHotel(h),
-    affiliateLinks: buildAllAffiliateLinks(h, quiz),
-  }));
+  let hotels = quiz.destination ? getHotelsByCity(quiz.destination) : [];
+  if (quiz.stars > 0) hotels = hotels.filter(h => h.stars >= quiz.stars);
+  return hotels.map(normaliseMockHotel);
 }
 
-// ── Normalise mock hotel to standard schema ────────────────────
-function normaliseHotel(hotel) {
+function normaliseMockHotel(hotel) {
   const ri = computeRI(hotel.platforms);
 
   const stdPrices = Object.entries(hotel.platforms)
@@ -142,6 +96,7 @@ function normaliseHotel(hotel) {
 
   return {
     id:           hotel.id,
+    source:       'mock',
     name:         hotel.name,
     location:     hotel.location,
     city:         hotel.city,
@@ -150,10 +105,17 @@ function normaliseHotel(hotel) {
     coords:       hotel.coords,
     distanceKm:   hotel.distanceKm,
     amenities:    hotel.amenities,
+    facilities:   [],
+    description:  '',
     photos:       hotel.photos,
+    gallery:      [],
     riScore:      ri.score,
     riConfidence: ri.confidence,
     totalReviews: ri.totalReviews,
+    ratingSource: 'demo',
+    available:    true,
+    currency:     'USD',
+    priceType:    'demo',
     platforms:    hotel.platforms,
     bestPrice:    stdPrices[0]  || null,
     bestFlex:     flexPrices[0] || null,
@@ -162,15 +124,4 @@ function normaliseHotel(hotel) {
     matchReason:  null,
     reviews:      null,
   };
-}
-
-function matchesBudget(hotel, budget) {
-  const min = hotel.pricePerNight?.min ?? 0;
-  switch (budget) {
-    case 'u80':     return min < 80;
-    case '80_150':  return min >= 80  && min <= 150;
-    case '150_250': return min >= 150 && min <= 250;
-    case '250plus': return min >= 250;
-    default:        return true;
-  }
 }

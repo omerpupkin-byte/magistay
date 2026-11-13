@@ -1,221 +1,193 @@
 // ─── services/aiMatcher.js ─────────────────────────────────────
-// Uses Claude to score each candidate hotel against the quiz answers
-// and generate a natural-language "why chosen" explanation.
+// Ranks candidate hotels against the traveller's brief and explains why.
 //
-// If ANTHROPIC_API_KEY is not set → falls back to deterministic mock scoring.
-// When the key is added → real AI kicks in automatically, zero code change.
+// With ANTHROPIC_API_KEY: Claude reads the brief and each hotel's real
+// data (facilities, rates, rating, distance) and returns the best five,
+// each with a reason and a need-by-need checklist.
+//
+// Without the key, or if the call fails: a deterministic scorer does the
+// same job from the amenity data alone. It never invents facts — a need
+// the data does not confirm is reported as "unknown".
 
-import Anthropic from '@anthropic-ai/sdk';
+import { askClaudeJSON, hasClaude } from './claude.js';
+import { describeTraveller, listNeeds, checkAllNeeds } from './travellerProfile.js';
 
-const client = process.env.ANTHROPIC_API_KEY
-  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  : null;
-
-const MAX_RESULTS = 5;
+const MAX_RESULTS    = 5;
+const MAX_CANDIDATES = 20;   // sent to the AI; keeps the call fast
 
 // ── Main entry ────────────────────────────────────────────────
 export async function matchHotelsWithAI(quiz, hotels) {
-  if (!client) {
-    console.log('[AI MATCHER] No API key — using mock scoring');
-    return mockMatch(quiz, hotels);
+  if (hotels.length === 0) return [];
+
+  // Deterministic baseline: used to shortlist, and as the fallback result.
+  const baseline = hotels.map(h => baselineScore(quiz, h)).sort((a, b) => b.matchScore - a.matchScore);
+
+  if (!hasClaude()) {
+    console.log('[AI MATCHER] No API key — using rule-based scoring');
+    return baseline.slice(0, MAX_RESULTS).map(h => ({ ...h, matchedBy: 'rules' }));
   }
 
-  console.log('[AI MATCHER] Calling Claude...');
-  return aiMatch(quiz, hotels);
-}
-
-// ── Real AI matching ──────────────────────────────────────────
-async function aiMatch(quiz, hotels) {
-  const prompt = buildMatchPrompt(quiz, hotels);
-
-  const message = await client.messages.create({
-    model:      'claude-sonnet-4-5',
-    max_tokens: 2048,
-    messages: [{ role: 'user', content: prompt }],
-  });
-
-  const raw = message.content[0]?.text || '';
-
+  const shortlist = baseline.slice(0, MAX_CANDIDATES);
   try {
-    const parsed = JSON.parse(extractJSON(raw));
-    return applyScores(hotels, parsed.matches).slice(0, MAX_RESULTS);
+    console.log(`[AI MATCHER] Calling Claude with ${shortlist.length} candidates...`);
+    const parsed = await askClaudeJSON(buildMatchPrompt(quiz, shortlist), { maxTokens: 3000 });
+    const ranked = applyAIResult(quiz, shortlist, parsed.matches || []);
+    if (ranked.length > 0) return ranked.slice(0, MAX_RESULTS);
+    throw new Error('AI returned no usable matches');
   } catch (e) {
-    console.error('[AI MATCHER] Parse error — falling back to mock', e.message);
-    return mockMatch(quiz, hotels);
+    console.error('[AI MATCHER] Falling back to rule-based scoring:', e.message);
+    return baseline.slice(0, MAX_RESULTS).map(h => ({ ...h, matchedBy: 'rules' }));
   }
 }
 
-// ── Prompt builder ─────────────────────────────────────────────
-function buildMatchPrompt(quiz, hotels) {
-  const quizSummary = formatQuiz(quiz);
-  const hotelList   = hotels.map((h, i) => formatHotelForPrompt(h, i)).join('\n\n');
+// ── Prompt ────────────────────────────────────────────────────
+export function buildMatchPrompt(quiz, hotels) {
+  const needs = listNeeds(quiz);
+  return `You are the matching engine of Magistay, a hotel recommendation service. You act as a meticulous travel agent who reads the fine print.
 
-  return `You are the AI matching engine for Magistay, a hotel recommendation service.
+THE TRAVELLER
+${describeTraveller(quiz)}
 
-A traveller has submitted the following requirements:
-${quizSummary}
+THE CANDIDATE HOTELS (all have a room on these dates unless marked otherwise)
+${hotels.map(formatHotelForPrompt).join('\n\n')}
 
-Here are the candidate hotels to evaluate:
-${hotelList}
+YOUR TASK
+Pick the ${Math.min(MAX_RESULTS, hotels.length)} hotels that best fit THIS traveller and rank them, best first.
 
-Your task:
-1. Score each hotel from 0–100 based on how well it matches the traveller's requirements.
-2. Write a concise, specific "matched because" explanation (1–2 sentences) for each hotel.
-   - Reference the specific requirements it meets (e.g. "crib available", "elevator throughout").
-   - Be honest — if something may not suit them, say so briefly (e.g. "compact rooms may be tight with a crib").
-3. Return ONLY valid JSON in this exact format:
+Judge fit the way a great agent would: who is travelling and why, the stated must-haves and needs, location for their plans, value against their budget, and guest rating. A hotel that misses a must-have should rank below one that meets it, unless everything else is far better.
 
+Rules about facts — these matter more than anything else:
+- Use ONLY the data given above for each hotel. Do not add facts from memory.
+- If the data does not say whether the hotel has something, the status is "unknown". Never guess "yes".
+- Prices shown are indicative. Do not promise a price.
+
+Return ONLY valid JSON, no prose around it:
 {
   "matches": [
     {
-      "id": "hotel-id",
-      "matchScore": 94,
-      "matchReason": "Beachfront access as requested, crib confirmed, elevator throughout. Breakfast included and free cancellation on your dates."
+      "id": "<hotel id exactly as given>",
+      "matchScore": <0-100, honest — reserve 90+ for a hotel that meets every stated need>,
+      "matchReason": "<2 sentences to the traveller, specific to their trip. Mention the most important fit and, if there is one, the main compromise.>",
+      "needs": [${needs.length ? '\n        { "need": "<need label exactly as listed below>", "status": "yes" | "no" | "unknown", "note": "<optional, max 8 words>" }\n      ' : ''}],
+      "highlights": ["<up to 3 short facts from the data that suit this traveller>"]
     }
   ]
 }
-
-Important:
-- Include ALL hotels in the response, even low-scoring ones.
-- Sort by matchScore descending.
-- Be specific to the traveller's actual quiz answers, not generic.
-- If they have an infant, always check for crib and accessibility.`;
+${needs.length ? `\nThe needs to check for every hotel, in this order:\n${needs.map(n => `  - ${n}`).join('\n')}` : '\nThe traveller listed no specific needs, so "needs" is an empty array.'}`;
 }
 
-// ── Format quiz answers for the prompt ────────────────────────
-function formatQuiz(quiz) {
+function formatHotelForPrompt(h, i) {
+  const cur = h.currency || 'USD';
   const lines = [
-    `Destination: ${quiz.destination || 'Not specified'}`,
-    `Travelers: ${quiz.adults} adult(s), ${quiz.children || 0} child(ren), ${quiz.infants || 0} infant(s)`,
-    `Rooms needed: ${quiz.rooms || 1}`,
-    `Dates: ${quiz.dateFlexibility === 'exact' && quiz.checkIn ? `${quiz.checkIn} → ${quiz.checkOut}` : quiz.dateFlexibility || 'Not specified'}`,
-    `Budget per night: ${quiz.budget || 'No limit'}`,
-    `Star rating minimum: ${quiz.stars > 0 ? quiz.stars + '+' : 'Any'}`,
-    `Vibes: ${(quiz.vibes || []).join(', ') || 'Not specified'}`,
-    `Must-haves: ${(quiz.priorities || []).join(', ') || 'None specified'}`,
-    `Special needs: ${formatSpecialNeeds(quiz.specialNeeds)}`,
-    `Free text: ${quiz.freeText || 'None'}`,
+    `Hotel ${i + 1} — ${h.name} (id: ${h.id})`,
+    `  Where: ${[h.location, h.city, h.country].filter(Boolean).join(', ')}${h.distanceKm != null ? ` · ${h.distanceKm} km from ${h.distanceFrom || 'the centre'}` : ''}`,
+    `  Class: ${h.stars > 0 ? h.stars + '★' : 'unrated'}`,
+    `  Guest rating: ${h.riScore ? `${h.riScore}/10 from ${h.totalReviews} reviews${h.ratingSource ? ` (${h.ratingSource})` : ''}` : 'no rating data'}`,
   ];
-  return lines.map(l => `  - ${l}`).join('\n');
+
+  if (h.bestPrice?.price != null) {
+    let price = `  Price: from ${h.bestPrice.price} ${cur}/night (indicative)`;
+    if (h.bestFlex?.price != null) price += ` · refundable from ${h.bestFlex.price} ${cur}/night${h.bestFlex.terms ? ` (${h.bestFlex.terms})` : ''}`;
+    if (h.breakfastPrice != null)  price += ` · with breakfast from ${h.breakfastPrice} ${cur}/night`;
+    lines.push(price);
+  } else {
+    lines.push('  Price: not available — traveller checks live price on the booking platform');
+  }
+  if (h.available === false) lines.push('  Availability: NOT confirmed for these dates');
+  if (h.boards?.length)      lines.push(`  Meal plans offered: ${h.boards.slice(0, 6).join(', ')}`);
+  if (h.facilities?.length)  lines.push(`  Facilities: ${h.facilities.slice(0, 45).join('; ')}`);
+  else if (h.amenities?.length) lines.push(`  Amenities: ${h.amenities.join(', ')}`);
+  else lines.push('  Facilities: no facility data');
+  if (h.description)         lines.push(`  Description: ${h.description.slice(0, 380)}`);
+  return lines.join('\n');
 }
 
-function formatSpecialNeeds(needs) {
-  if (!needs || typeof needs !== 'object') return 'None';
-  const all = Object.values(needs).flat();
-  return all.length > 0 ? all.join(', ') : 'None';
+// ── Merge the AI's answer onto the hotel objects ──────────────
+function applyAIResult(quiz, hotels, matches) {
+  const byId   = new Map(hotels.map(h => [h.id, h]));
+  const needs  = listNeeds(quiz);
+  const result = [];
+
+  for (const m of matches) {
+    const hotel = byId.get(m?.id);
+    if (!hotel || result.some(r => r.id === hotel.id)) continue;
+
+    // Keep the checklist in the traveller's order; anything the AI skipped
+    // falls back to what the data alone confirms.
+    const fromData = new Map(hotel.needsCheck.map(n => [n.need.toLowerCase(), n]));
+    const fromAI   = new Map((Array.isArray(m.needs) ? m.needs : [])
+      .filter(n => n && typeof n.need === 'string' && ['yes', 'no', 'unknown'].includes(n.status))
+      .map(n => [n.need.toLowerCase(), n]));
+
+    const needsCheck = needs.map(need => {
+      const ai = fromAI.get(need.toLowerCase());
+      if (!ai) return fromData.get(need.toLowerCase()) || { need, status: 'unknown' };
+      const item = { need, status: ai.status };
+      if (typeof ai.note === 'string' && ai.note.trim()) item.note = ai.note.trim().slice(0, 80);
+      return item;
+    });
+
+    result.push({
+      ...hotel,
+      matchScore:  clampScore(m.matchScore, hotel.matchScore),
+      matchReason: typeof m.matchReason === 'string' && m.matchReason.trim() ? m.matchReason.trim() : hotel.matchReason,
+      needsCheck,
+      highlights:  Array.isArray(m.highlights) ? m.highlights.filter(x => typeof x === 'string').slice(0, 3) : [],
+      matchedBy:   'ai',
+    });
+  }
+  return result.sort((a, b) => b.matchScore - a.matchScore);
 }
 
-// ── Format a hotel for the prompt ─────────────────────────────
-function formatHotelForPrompt(hotel, index) {
-  return [
-    `Hotel ${index + 1}: ${hotel.name} (id: ${hotel.id})`,
-    `  Location: ${hotel.location}, ${hotel.city} · ${hotel.stars}★ · ${hotel.distanceKm}km from center`,
-    `  RI Score: ${hotel.riScore} (${hotel.riConfidence} confidence, ${hotel.totalReviews?.toLocaleString()} reviews)`,
-    `  Price range: $${hotel.bestPrice?.price || '?'}/night (best) — $${hotel.bestFlex?.price || 'N/A'}/night (flexible)`,
-    `  Amenities: ${hotel.amenities.join(', ')}`,
-  ].join('\n');
+function clampScore(value, fallback) {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : fallback;
 }
 
-// ── Apply AI scores back to hotel objects ─────────────────────
-function applyScores(hotels, matches) {
-  return hotels
-    .map(hotel => {
-      const match = matches.find(m => m.id === hotel.id);
-      return {
-        ...hotel,
-        matchScore:  match?.matchScore  ?? 50,
-        matchReason: match?.matchReason ?? 'Good overall match.',
-      };
-    })
-    .sort((a, b) => b.matchScore - a.matchScore);
+// ── Rule-based scoring ────────────────────────────────────────
+// Score = how many stated needs the hotel's data confirms, plus rating,
+// location and budget fit. Explains itself only with confirmed facts.
+export function baselineScore(quiz, hotel) {
+  const needsCheck = checkAllNeeds(quiz, hotel);
+  const met = needsCheck.filter(n => n.status === 'yes');
+
+  let score = 55;
+  if (needsCheck.length > 0) score += Math.round((met.length / needsCheck.length) * 25);
+  else score += 10;
+
+  if (hotel.riScore)                 score += Math.round((hotel.riScore - 7) * 4);   // 9.0 → +8, 6.0 → −4
+  if (hotel.riConfidence === 'high') score += 2;
+  if (quiz.stars && hotel.stars >= quiz.stars) score += 3;
+
+  if (hotel.distanceKm != null) {
+    if (hotel.distanceKm <= 1)      score += 5;
+    else if (hotel.distanceKm <= 3) score += 2;
+    else if (hotel.distanceKm > 10) score -= 4;
+  }
+
+  const fit = budgetFit(quiz.budget, hotel.bestPrice?.price);
+  if (fit === 'within') score += 6;
+  if (fit === 'over')   score -= 12;
+
+  score = Math.min(97, Math.max(20, score));
+
+  const parts = met.slice(0, 3).map(n => n.need);
+  let matchReason = parts.length
+    ? `Confirmed for your trip: ${parts.join(', ')}.`
+    : `A solid option for ${quiz.destination || 'your trip'}.`;
+  const unknown = needsCheck.filter(n => n.status !== 'yes');
+  if (unknown.length) matchReason += ` Check with the hotel: ${unknown.slice(0, 2).map(n => n.need).join(', ')}.`;
+
+  return { ...hotel, matchScore: score, matchReason, needsCheck, highlights: [] };
 }
 
-// ── Extract JSON from Claude response ─────────────────────────
-function extractJSON(text) {
-  const match = text.match(/\{[\s\S]*\}/);
-  return match ? match[0] : text;
-}
-
-// ── Mock scoring (no API key) ─────────────────────────────────
-// Deterministic scoring based on amenity matching.
-// Produces realistic results for development and testing.
-function mockMatch(quiz, hotels) {
-  const scored = hotels.map(hotel => {
-    let score = 60; // base score
-    const reasons = [];
-    const warnings = [];
-
-    // +Amenity matching
-    const wants = [
-      ...(quiz.priorities || []),
-      ...(quiz.infants > 0 ? ['crib'] : []),
-      ...(quiz.specialNeeds?.accessibility || []),
-    ];
-
-    for (const want of wants) {
-      if (hotel.amenities.includes(want)) {
-        score += 6;
-        reasons.push(wantLabel(want));
-      } else if (want === 'crib' && quiz.infants > 0) {
-        score -= 15;
-        warnings.push('crib not listed — confirm with hotel');
-      }
-    }
-
-    // +Star match
-    if (quiz.stars && hotel.stars >= quiz.stars) {
-      score += 5;
-    }
-
-    // +RI confidence
-    if (hotel.riConfidence === 'high')     score += 8;
-    if (hotel.riConfidence === 'moderate') score += 4;
-    if (hotel.riConfidence === 'low')      score -= 5;
-
-    // +Distance
-    if (hotel.distanceKm <= 1)  score += 6;
-    if (hotel.distanceKm <= 2)  score += 3;
-    if (hotel.distanceKm > 5)   score -= 4;
-
-    // Clamp 0–99
-    score = Math.min(99, Math.max(30, Math.round(score)));
-
-    // Build reason string
-    const reasonParts = reasons.slice(0, 3);
-    const warningPart = warnings.length > 0 ? ` Note: ${warnings[0]}.` : '';
-    const matchReason = reasonParts.length > 0
-      ? `${reasonParts.join(', ')}.${warningPart}`
-      : `Good overall match for your trip to ${quiz.destination || 'your destination'}.`;
-
-    return { ...hotel, matchScore: score, matchReason };
-  });
-
-  return scored
-    .sort((a, b) => b.matchScore - a.matchScore)
-    .slice(0, MAX_RESULTS);
-}
-
-// ── Amenity → human label ─────────────────────────────────────
-function wantLabel(want) {
-  const map = {
-    crib:              'Crib confirmed available',
-    breakfast:         'Breakfast included',
-    elevator:          'Elevator throughout — no stairs',
-    pool:              'Pool on site',
-    free_cancellation: 'Free cancellation available',
-    sea_view:          'Sea view rooms available',
-    walkable:          'Walkable city-center location',
-    spa:               'Spa on site',
-    parking:           'Parking available',
-    wheelchair_accessible: 'Wheelchair accessible throughout',
-    late_checkout:     'Late checkout available',
-    beach_access:      'Direct beach access',
-    rooftop:           'Rooftop terrace',
-    restaurant:        'Restaurant on site',
-    gym:               'Gym & fitness centre',
-    pet:               'Pet friendly',
-    kosher:            'Kosher dining available',
-    halal:             'Halal dining available',
-  };
-  return map[want] || want.replace(/_/g, ' ');
+// Budget bands are in USD per night; rates may come in another currency,
+// so this is deliberately a loose check (within 15% counts as within).
+function budgetFit(budget, price) {
+  const bands = { u80: [0, 80], '80_150': [80, 150], '150_250': [150, 250], '250plus': [250, Infinity] };
+  const band = bands[budget];
+  if (!band || price == null) return 'unknown';
+  if (price > band[1] * 1.15) return 'over';
+  if (price < band[0] * 0.6)  return 'under';
+  return 'within';
 }

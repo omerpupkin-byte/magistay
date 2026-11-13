@@ -1,112 +1,12 @@
 // ─── services/bookingAPI.js ────────────────────────────────────
-// Booking.com integration — two layers:
+// Booking.com Demand API (full hotel search, availability, pricing).
+// Requires Booking.com "Managed Affiliate Partner" approval — until then
+// this file is dormant. Activate by setting BOOKING_API_KEY/SECRET.
 //
-// LAYER 1: Affiliate links (available immediately after CJ approval)
-//   → Build deep-links to Booking.com with your affiliate tracking
-//   → User clicks → you earn commission on completed bookings
-//
-// LAYER 2: Demand API (requires separate Booking.com approval)
-//   → Full hotel search, availability, pricing, photos, reviews
-//   → Apply at: developers.booking.com after CJ approval
-//
-// HOW TO ACTIVATE AFFILIATE LINKS:
-// 1. Get approved on CJ (Commission Junction) — you already applied
-// 2. In CJ: Partners → Booking.com → Get Link → Deep Link
-// 3. Your affiliate ID will be in the link (aid=XXXXXX)
-// 4. Add to Railway Variables: BOOKING_AFFILIATE_ID=your_aid
-//
-// HOW TO ACTIVATE DEMAND API:
-// 1. Apply at developers.booking.com after CJ approval
-// 2. Add to Railway Variables:
-//      BOOKING_API_KEY=your_key
-//      BOOKING_API_SECRET=your_secret
+// Outbound booking links (the affiliate layer, which works today)
+// live in ./affiliateLinks.js.
 
-// ── Build affiliate deep-link for a hotel ─────────────────────
-export function buildBookingLink(hotel, quiz) {
-  const affiliateId = process.env.BOOKING_AFFILIATE_ID;
-  if (!affiliateId) return `https://www.booking.com/search.html?ss=${encodeURIComponent(hotel.name)}`;
-
-  const params = new URLSearchParams({
-    aid:      affiliateId,
-    ss:       hotel.name,
-    checkin:  quiz.checkIn  || '',
-    checkout: quiz.checkOut || '',
-    group_adults:   quiz.adults  || 2,
-    group_children: (quiz.children || 0) + (quiz.infants || 0),
-    no_rooms:       quiz.rooms   || 1,
-    lang:     'en-gb',
-    currency: 'USD',
-  });
-
-  // If we have the Booking.com hotel ID, link directly to the hotel page
-  if (hotel.bookingComId) {
-    return `https://www.booking.com/hotel/${hotel.bookingComId}.html?${params}`;
-  }
-
-  return `https://www.booking.com/searchresults.html?${params}`;
-}
-
-// ── Build affiliate links for all platforms ───────────────────
-export function buildAllAffiliateLinks(hotel, quiz) {
-  return {
-    bookingCom:  buildBookingLink(hotel, quiz),
-    expedia:     buildExpediaLink(hotel, quiz),
-    agoda:       buildAgodaLink(hotel, quiz),
-    hotelsCom:   buildHotelsComLink(hotel, quiz),
-    tripAdvisor: buildTripAdvisorLink(hotel, quiz),
-    kayak:       buildKayakLink(hotel, quiz),
-  };
-}
-
-function buildExpediaLink(hotel, quiz) {
-  const params = new URLSearchParams({
-    destination: hotel.name,
-    startDate:   quiz.checkIn  || '',
-    endDate:     quiz.checkOut || '',
-    adults:      quiz.adults   || 2,
-  });
-  const affId = process.env.EXPEDIA_AFFILIATE_ID;
-  if (affId) params.set('affcid', affId);
-  return `https://www.expedia.com/Hotel-Search?${params}`;
-}
-
-function buildAgodaLink(hotel, quiz) {
-  const params = new URLSearchParams({
-    city:      hotel.city,
-    checkIn:   quiz.checkIn  || '',
-    checkOut:  quiz.checkOut || '',
-    adults:    quiz.adults   || 2,
-    children:  (quiz.children || 0) + (quiz.infants || 0),
-    rooms:     quiz.rooms    || 1,
-  });
-  const affId = process.env.AGODA_AFFILIATE_ID;
-  if (affId) params.set('cid', affId);
-  return `https://www.agoda.com/search?${params}`;
-}
-
-function buildHotelsComLink(hotel, quiz) {
-  const params = new URLSearchParams({
-    q:         hotel.name,
-    startDate: quiz.checkIn  || '',
-    endDate:   quiz.checkOut || '',
-    adults:    quiz.adults   || 2,
-  });
-  return `https://www.hotels.com/search.do?${params}`;
-}
-
-function buildTripAdvisorLink(hotel, quiz) {
-  const params = new URLSearchParams({
-    q:     hotel.name,
-    geo:   hotel.city || '',
-  });
-  return `https://www.tripadvisor.com/Search?${params}`;
-}
-
-function buildKayakLink(hotel, quiz) {
-  const checkIn  = quiz.checkIn  || getDefaultDate(30);
-  const checkOut = quiz.checkOut || getDefaultDate(35);
-  return `https://www.kayak.com/hotels/${encodeURIComponent(hotel.city || hotel.name)}/${checkIn}/${checkOut}/${quiz.adults || 2}adults`;
-}
+export { buildAllAffiliateLinks } from './affiliateLinks.js';
 
 // ── Demand API (full hotel data) ──────────────────────────────
 // Requires separate Booking.com API approval.
