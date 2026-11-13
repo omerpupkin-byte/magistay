@@ -155,7 +155,8 @@ export function baselineScore(quiz, hotel) {
   if (needsCheck.length > 0) score += Math.round((met.length / needsCheck.length) * 25);
   else score += 10;
 
-  if (hotel.riScore)                 score += Math.round((hotel.riScore - 7) * 4);   // 9.0 → +8, 6.0 → −4
+  // A rating built on a handful of reviews says little, so it earns no bonus.
+  if (hotel.riScore && hotel.totalReviews >= 50) score += Math.round((hotel.riScore - 7) * 4);   // 9.0 → +8, 6.0 → −4
   if (hotel.riConfidence === 'high') score += 2;
   if (quiz.stars && hotel.stars >= quiz.stars) score += 3;
 

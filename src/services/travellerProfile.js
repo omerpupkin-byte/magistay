@@ -59,7 +59,8 @@ export function listNeeds(quiz) {
 // facility names and description.
 const NEED_RULES = [
   { need: /crib|cot/i,                    amenity: ['crib'],                  text: /\bcot\b|crib|baby bed/i },
-  { need: /breakfast/i,                   amenity: ['breakfast'],             text: /breakfast/i, rate: 'breakfast' },
+  // "Included" is about the rate, not the hotel: a breakfast room proves nothing.
+  { need: /breakfast/i,                   rate: 'breakfast',                  offered: /breakfast/i },
   { need: /free cancel/i,                 amenity: ['free_cancellation'],     rate: 'flexible' },
   { need: /children.?s pool|kids.? pool/i,amenity: ['kids_pool'],             text: /children.?s (swimming )?pool|kids.? pool|paddling/i },
   { need: /\bpool\b/i,                    amenity: ['pool'],                  text: /pool/i },
@@ -110,6 +111,9 @@ export function checkNeed(need, hotel) {
   if (rule.text && rule.text.test(haystack))           return { need, status: 'yes' };
   if (rule.rate === 'breakfast' && hotel.breakfastPrice != null) {
     return { need, status: 'yes', note: 'available as a rate with breakfast' };
+  }
+  if (rule.rate === 'breakfast' && (amenities.includes('breakfast') || rule.offered.test(haystack))) {
+    return { need, status: 'unknown', note: 'breakfast served; check it is in your rate' };
   }
   if (rule.rate === 'flexible' && hotel.bestFlex) {
     return { need, status: 'yes', note: hotel.bestFlex.terms || 'refundable rate available' };
