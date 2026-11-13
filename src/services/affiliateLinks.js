@@ -91,6 +91,7 @@ function buildBookingLink(hotel, trip) {
     group_children: String(trip.ages.length),
   });
   for (const age of trip.ages) params.append('age', String(age));
+  if (hotel.currency) params.set('selected_currency', hotel.currency);   // same currency as the price we show
   if (bookingAid) params.set('aid', bookingAid);
 
   const destination = `https://www.booking.com/searchresults.html?${params}`;
@@ -114,6 +115,7 @@ function buildAgodaLink(hotel, trip) {
     children: String(trip.ages.length),
   });
   if (trip.ages.length) params.set('childAges', trip.ages.join(','));
+  if (hotel.currency) params.set('currency', hotel.currency);
   if (agodaCid) params.set('cid', agodaCid);
   return `https://www.agoda.com/search?${params}`;
 }
@@ -139,6 +141,107 @@ function buildExpediaLink(hotel, trip) {
 
 function buildHotelsComLink(hotel, trip) {
   return `https://www.hotels.com/Hotel-Search?${expediaGroupParams(hotel, trip)}`;
+}
+
+// ── Direct links to the hotel's own page on each platform ─────
+// Google Hotels' price list carries, for every seller, the address of
+// the hotel's page on that seller's site. We take only the hotel's
+// identity from it (page path or hotel id), drop all of Google's and the
+// seller's tracking, and build OUR link: our affiliate id, the
+// traveller's dates and guests.
+//
+// Returns null whenever the address is not clearly a hotel page on the
+// expected site; the caller then keeps the search link.
+export function buildDirectLink(platform, sellerLink, quiz = {}, currency = '') {
+  const dest = sellerDestination(sellerLink);
+  if (!dest) return null;
+  const trip = tripParams(quiz);
+  try {
+    if (platform === 'bookingCom') return directBooking(dest, trip, currency);
+    if (platform === 'agoda')      return directAgoda(dest, trip, currency);
+    if (platform === 'expedia')    return directExpediaGroup(dest, trip, 'expedia.com');
+    if (platform === 'hotelsCom')  return directExpediaGroup(dest, trip, 'hotels.com');
+  } catch { /* fall through */ }
+  return null;
+}
+
+// The seller's page is the `pcurl` parameter of Google's click link.
+function sellerDestination(link) {
+  try {
+    const outer = new URL(link);
+    const inner = outer.searchParams.get('pcurl') || (outer.hostname.endsWith('google.com') ? null : link);
+    return inner ? new URL(inner) : null;
+  } catch { return null; }
+}
+
+function onSite(url, domain) {
+  return url.protocol === 'https:' && (url.hostname === domain || url.hostname.endsWith('.' + domain));
+}
+
+function directBooking(dest, trip, currency) {
+  // https://www.booking.com/hotel/es/some-hotel.html  (optionally .en-gb.html)
+  if (!onSite(dest, 'booking.com')) return null;
+  const m = dest.pathname.match(/^\/hotel\/([a-z]{2})\/([a-z0-9-]+)(?:\.[a-z-]+)?\.html$/i);
+  if (!m) return null;
+  const { bookingCjLink, bookingAid } = ids();
+  const params = new URLSearchParams({
+    checkin: trip.checkIn, checkout: trip.checkOut,
+    group_adults: String(trip.adults), no_rooms: String(trip.rooms),
+    group_children: String(trip.ages.length),
+  });
+  for (const age of trip.ages) params.append('age', String(age));
+  if (currency) params.set('selected_currency', currency);
+  if (bookingAid) params.set('aid', bookingAid);
+  const page = `https://www.booking.com/hotel/${m[1].toLowerCase()}/${m[2]}.html?${params}`;
+  if (bookingAid || !bookingCjLink) return page;
+  const sep = bookingCjLink.includes('?') ? '&' : '?';
+  return `${bookingCjLink}${sep}url=${encodeURIComponent(page)}`;
+}
+
+function directAgoda(dest, trip, currency) {
+  if (!onSite(dest, 'agoda.com')) return null;
+  const { agodaCid } = ids();
+  const hid = ['hid', 'hotel_id', 'hotelid', 'selectedproperty']
+    .map(k => dest.searchParams.get(k)).find(v => /^\d{2,12}$/.test(v || ''));
+  const common = { checkin: trip.checkIn, checkout: trip.checkOut, los: String(trip.nights),
+                   adults: String(trip.adults), rooms: String(trip.rooms), children: String(trip.ages.length) };
+  let url;
+  if (hid) {
+    url = new URL('https://www.agoda.com/partners/partnersearch.aspx');
+    url.search = String(new URLSearchParams({ pcs: '1', hid, ...common }));
+  } else if (/^\/[a-z0-9-]+(?:\/[a-z0-9-]+)*\/hotel\/[a-z0-9-]+\.html$/i.test(dest.pathname)) {
+    url = new URL(`https://www.agoda.com${dest.pathname}`);
+    url.search = String(new URLSearchParams({ ...common, checkIn: trip.checkIn }));
+  } else {
+    return null;
+  }
+  if (trip.ages.length) url.searchParams.set('childages', trip.ages.join(','));
+  if (currency) url.searchParams.set('currency', currency);
+  if (agodaCid) url.searchParams.set('cid', agodaCid);
+  return String(url);
+}
+
+function directExpediaGroup(dest, trip, domain) {
+  if (!onSite(dest, domain)) return null;
+  const { expediaAffcid, expediaAfflid } = ids();
+  const selected = dest.searchParams.get('selected');
+  let url;
+  if (/^\d{2,12}$/.test(selected || '')) {
+    // .../Hotel-Search?selected=<hotel id> opens the search with this hotel pinned first.
+    url = new URL(`https://www.${domain}/Hotel-Search`);
+    url.search = String(new URLSearchParams({
+      selected, startDate: trip.checkIn, endDate: trip.checkOut,
+      adults: String(trip.adults), rooms: String(trip.rooms),
+    }));
+  } else if (/\.h\d+\.Hotel-Information$/i.test(dest.pathname)) {
+    url = new URL(`https://www.${domain}${dest.pathname}`);
+    url.search = String(new URLSearchParams({ chkin: trip.checkIn, chkout: trip.checkOut, rm1: `a${trip.adults}` }));
+  } else {
+    return null;
+  }
+  if (expediaAffcid) url.searchParams.set('affcid', expediaAffcid);
+  if (expediaAfflid) { url.searchParams.set('afflid', expediaAfflid); url.searchParams.set('ref_id', expediaAfflid); }
+  return String(url);
 }
 
 // ── Not tracked (no affiliate programme connected) ────────────

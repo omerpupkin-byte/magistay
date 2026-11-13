@@ -12,10 +12,13 @@
 //     hotel's price is worse than none.
 //   - Any failure (no key, timeout, quota, odd response) leaves the hotel
 //     exactly as it was. Live prices never break a search.
-//   - Outbound links stay OUR affiliate links. Google's links are not used.
+//   - Outbound links stay OUR affiliate links. From Google's link we take
+//     only which page is the hotel's, to open that page directly.
 //
 // Cost: 1 SerpApi search per hotel shown, 2 when the name is ambiguous.
 // Results are cached for 20 minutes per hotel + trip.
+
+import { buildDirectLink } from './affiliateLinks.js';
 
 const ENDPOINT   = 'https://serpapi.com/search.json';
 const TIMEOUT_MS = 12_000;
@@ -45,7 +48,7 @@ export async function addLivePrices(hotels, quiz, { fetchJson = serpApiFetch } =
   const results = await Promise.all(hotels.map(async (hotel) => {
     try {
       const live = await lookup(hotel, quiz, fetchJson);
-      return live ? applyLivePrices(hotel, live) : hotel;
+      return live ? applyLivePrices(hotel, live, quiz) : hotel;
     } catch (e) {
       console.error(`[LIVE PRICES] ${hotel.name}: ${String(e.message).slice(0, 200)}`);
       return hotel;
@@ -53,8 +56,14 @@ export async function addLivePrices(hotels, quiz, { fetchJson = serpApiFetch } =
   }));
 
   const priced = results.filter(h => h.priceType === 'live').length;
-  console.log(`[LIVE PRICES] ${priced}/${hotels.length} hotels priced from Google Hotels`);
-  return results;
+  const direct = results.reduce((n, h) => n + Object.values(h.platforms || {}).filter(p => p.direct).length, 0);
+  console.log(`[LIVE PRICES] ${priced}/${hotels.length} hotels priced from Google Hotels, ${direct} direct hotel-page links`);
+
+  // A hotel Google knows, with no price on any of our platforms for these
+  // dates, cannot be booked through us: show it after the ones that can.
+  if (priced === 0) return results;
+  const unbookable = h => h.livePrices && h.livePrices.found === 0;
+  return [...results.filter(h => !unbookable(h)), ...results.filter(unbookable)];
 }
 
 // ── One hotel ─────────────────────────────────────────────────
@@ -207,6 +216,7 @@ export function parseOffers(prices) {
     offers.push({
       platform:  platformKey(p.source),          // null for sellers we have no link for
       seller:    String(p.source).slice(0, 60),
+      link:      typeof p.link === 'string' ? p.link : null,   // server-side only, never sent to the page
       price,
       total:     num(total.extracted_after_taxes_fees) ?? num(total.extracted_lowest) ?? null,
       taxesIncluded:    num(night.extracted_after_taxes_fees) != null,
@@ -229,15 +239,19 @@ function num(v) {
 }
 
 // ── Put the live prices on the hotel ──────────────────────────
-export function applyLivePrices(hotel, live) {
+export function applyLivePrices(hotel, live, quiz = {}) {
   if (!live.matched) return hotel;
 
   const platforms = { ...(hotel.platforms || {}) };
+  const affiliateLinks = { ...(hotel.affiliateLinks || {}) };
   const tracked = [];
   for (const offer of live.offers) {
     if (!offer.platform || platforms[offer.platform]?.live) continue;   // keep the cheapest per platform
+    // Straight to the hotel's page on that platform, with our affiliate id.
+    const direct = offer.link ? buildDirectLink(offer.platform, offer.link, quiz, live.currency) : null;
+    if (direct) affiliateLinks[offer.platform] = direct;
     platforms[offer.platform] = {
-      price: offer.price, total: offer.total, live: true,
+      price: offer.price, total: offer.total, live: true, direct: !!direct,
       taxesIncluded: offer.taxesIncluded,
       freeCancellation: offer.freeCancellation, cancelUntil: offer.cancelUntil,
     };
@@ -270,6 +284,7 @@ export function applyLivePrices(hotel, live) {
   return {
     ...hotel,
     platforms,
+    affiliateLinks,
     livePrices,
     currency:  live.currency,
     priceType: 'live',

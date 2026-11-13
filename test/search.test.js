@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildAllAffiliateLinks } from '../src/services/affiliateLinks.js';
+import { buildAllAffiliateLinks, buildDirectLink } from '../src/services/affiliateLinks.js';
 import { buildOccupancies, buildSearchBody, searchRadiusKm, analyseRates, normaliseHotel, parseContent, amenitiesFromFacilities, searchHotelbeds } from '../src/services/hotelbedsAPI.js';
 import { baselineScore, buildMatchPrompt, matchHotelsWithAI } from '../src/services/aiMatcher.js';
 import { listNeeds, checkNeed } from '../src/services/travellerProfile.js';
@@ -302,7 +302,8 @@ test('live prices replace the indicative price and keep our links', async () => 
   assert.equal(h.platforms.hotelbeds.price, 380, 'supplier rate kept');
   assert.deepEqual(h.livePrices.cheaperElsewhere, { seller: 'Super.com', price: 390, official: false });
   assert.equal(h.breakfastPrice, null);
-  assert.equal(h.affiliateLinks.agoda, withLinks.affiliateLinks.agoda, 'outbound link is still ours');
+  assert.equal(h.affiliateLinks.agoda, withLinks.affiliateLinks.agoda, 'no hotel page known: the search link stays');
+  assert.equal(h.platforms.agoda.direct, false);
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].q, 'Hotel Arts Barcelona');
@@ -354,5 +355,60 @@ test('live prices never break a search', async () => {
   assert.equal(h.priceType, 'indicative');
   assert.equal(h.livePrices.found, 0);
   assert.deepEqual(applyLivePrices(arts, { matched: false }), arts);
+  delete process.env.SERPAPI_KEY;
+});
+
+// ── Direct hotel-page links ───────────────────────────────────
+const google = (pcurl) => 'https://www.google.com/travel/clk?pc=AAA&pcurl=' + encodeURIComponent(pcurl) + '&ap=1';
+
+test('direct links: the hotel page, our ids, the trip, none of their tracking', () => {
+  const b = new URL(buildDirectLink('bookingCom', google('https://www.booking.com/hotel/es/nh-collection-madrid-suecia.en-gb.html?aid=356980&label=metagha-link&checkin=2020-01-01'), quiz, 'EUR'));
+  assert.equal(b.hostname, 'www.anrdoezrs.net');
+  const page = new URL(b.searchParams.get('url'));
+  assert.equal(page.origin + page.pathname, 'https://www.booking.com/hotel/es/nh-collection-madrid-suecia.html');
+  assert.equal(page.searchParams.get('checkin'), '2027-07-15');
+  assert.equal(page.searchParams.get('selected_currency'), 'EUR');
+  assert.equal(page.searchParams.get('aid'), null, 'their affiliate id is dropped');
+  assert.equal(page.searchParams.get('label'), null);
+
+  const a = new URL(buildDirectLink('agoda', google('https://www.agoda.com/partners/partnersearch.aspx?cid=1833981&hid=67890&tag=gha'), quiz, 'EUR'));
+  assert.equal(a.pathname, '/partners/partnersearch.aspx');
+  assert.equal(a.searchParams.get('hid'), '67890');
+  assert.equal(a.searchParams.get('cid'), '1966785', 'our cid, not theirs');
+  assert.equal(a.searchParams.get('tag'), null);
+  assert.equal(a.searchParams.get('los'), '5');
+
+  const h = new URL(buildDirectLink('hotelsCom', google('https://www.hotels.com/Hotel-Search?selected=92220472&startDate=2024-02-06&mdpcid=HCOM-US.META'), quiz));
+  assert.equal(h.searchParams.get('selected'), '92220472');
+  assert.equal(h.searchParams.get('startDate'), '2027-07-15');
+  assert.equal(h.searchParams.get('mdpcid'), null);
+  assert.equal(h.searchParams.get('afflid'), '1101lDpY8aoX');
+
+  const e = new URL(buildDirectLink('expedia', google('https://www.expedia.com/Madrid-Hotels-NH-Suecia.h123456.Hotel-Information?mctc=10'), quiz));
+  assert.equal(e.pathname, '/Madrid-Hotels-NH-Suecia.h123456.Hotel-Information');
+  assert.equal(e.searchParams.get('chkin'), '2027-07-15');
+});
+
+test('direct links: anything that is not clearly the hotel page is refused', () => {
+  assert.equal(buildDirectLink('bookingCom', 'https://www.google.com/aclk?sa=l&adurl', quiz), null, 'ad link without a destination');
+  assert.equal(buildDirectLink('bookingCom', google('https://evil.example/hotel/es/x.html'), quiz), null, 'wrong site');
+  assert.equal(buildDirectLink('bookingCom', google('https://www.booking.com/searchresults.html?ss=x'), quiz), null, 'not a hotel page');
+  assert.equal(buildDirectLink('agoda', google('https://www.agoda.com/'), quiz), null);
+  assert.equal(buildDirectLink('expedia', google('https://www.hotels.com/Hotel-Search?selected=1234'), quiz), null, 'other platform');
+  assert.equal(buildDirectLink('agoda', 'not a url', quiz), null);
+});
+
+test('hotels nobody on our platforms sells on these dates go last; links become direct', async () => {
+  process.env.SERPAPI_KEY = 'test';
+  _clearLivePriceCache();
+  const sold = { ...arts, id: 'hotelbeds-9', name: 'VP Plaza Design', coords: { lat: 41.3869, lng: 2.1962 } };
+  const fetchJson = async (params) => params.q.startsWith('VP')
+    ? { type: 'hotel', name: 'VP Plaza Design', gps_coordinates: googleArts.gps_coordinates, prices: [] }
+    : { ...googleArts, prices: [{ source: 'Agoda', link: google('https://www.agoda.com/partners/partnersearch.aspx?hid=555'), ...rate(405, 2025) }] };
+  const out = await addLivePrices([sold, { ...arts, affiliateLinks: buildAllAffiliateLinks(arts, quiz) }], quiz, { fetchJson });
+  assert.deepEqual(out.map(h => h.name), ['Hotel Arts Barcelona', 'VP Plaza Design']);
+  assert.equal(out[0].platforms.agoda.direct, true);
+  assert.match(out[0].affiliateLinks.agoda, /partnersearch\.aspx\?.*hid=555.*cid=1966785/);
+  assert.ok(!JSON.stringify(out).includes('google.com/travel/clk'), "Google's link never reaches the page");
   delete process.env.SERPAPI_KEY;
 });
