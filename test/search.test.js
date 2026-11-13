@@ -243,3 +243,116 @@ test('breakfast is "included" only when a breakfast rate exists; thin ratings ea
   const many = baselineScore(q, { riScore: 9.4, totalReviews: 900, amenities: [] });
   assert.ok(many.matchScore > few.matchScore);
 });
+
+// ── Live prices (Google Hotels via SerpApi) ───────────────────
+import { addLivePrices, parseOffers, sameHotel, nameSimilarity, applyLivePrices, _clearLivePriceCache } from '../src/services/livePrices.js';
+
+const rate = (night, total, taxes = true) => ({
+  rate_per_night: taxes ? { extracted_lowest: night, extracted_before_taxes_fees: night - 20, extracted_after_taxes_fees: night } : { extracted_lowest: night },
+  total_rate:     { extracted_lowest: total },
+});
+const googleArts = {
+  type: 'hotel', name: 'Hotel Arts Barcelona, a Ritz-Carlton Hotel',
+  gps_coordinates: { latitude: 41.3869, longitude: 2.1962 },
+  prices: [
+    { source: 'Super.com',   ...rate(390, 1950) },
+    { source: 'Booking.com', ...rate(420, 2100), free_cancellation: true, free_cancellation_until_date: 'Jul 10' },
+    { source: 'Agoda',       ...rate(405, 2025) },
+    { source: 'Hotels.com',  ...rate(431, 2155, false) },
+    { source: 'Hotel Arts Barcelona', official: true, ...rate(450, 2250) },
+  ],
+};
+const arts = {
+  id: 'hotelbeds-1', name: 'Hotel Arts Barcelona', city: 'Barcelona', coords: { lat: 41.3868, lng: 2.1961 },
+  currency: 'EUR', priceType: 'indicative', platforms: { hotelbeds: { price: 380 } },
+  bestPrice: { platform: 'hotelbeds', price: 380 }, bestFlex: null, breakfastPrice: 410,
+};
+
+test('same hotel: position decides, the name confirms', () => {
+  assert.ok(sameHotel(arts, googleArts));
+  assert.ok(!sameHotel(arts, { name: 'W Barcelona', gps_coordinates: { latitude: 41.3869, longitude: 2.1962 } }), 'same spot, different name');
+  assert.ok(!sameHotel(arts, { name: 'Hotel Arts Barcelona', gps_coordinates: { latitude: 41.40, longitude: 2.15 } }), 'same name, 4 km away');
+  assert.ok(!sameHotel({ name: 'Hotel Arts', city: 'Barcelona', coords: null }, { name: 'Arts Garden Suites Deluxe' }), 'no position: a partial name is not enough');
+  assert.ok(sameHotel({ name: 'Hotel Arts Barcelona', city: 'Barcelona', coords: null }, { name: 'Arts Hotel Barcelona' }), 'no position: same words is enough');
+  assert.ok(sameHotel({ name: 'Hotel Barcelona', city: 'Barcelona', coords: { lat: 41.38, lng: 2.17 } }, { name: 'Barcelona Hotel', gps_coordinates: { latitude: 41.38, longitude: 2.17 } }));
+  assert.equal(nameSimilarity('Hôtel Café Royal & Spa', 'Cafe Royal Hotel'), 1);
+});
+
+test('offers: per night with taxes, mapped to our platforms, cheapest first', () => {
+  const offers = parseOffers(googleArts.prices);
+  assert.deepEqual(offers.map(o => o.seller), ['Super.com', 'Agoda', 'Booking.com', 'Hotels.com', 'Hotel Arts Barcelona']);
+  assert.deepEqual(offers.map(o => o.platform), [null, 'agoda', 'bookingCom', 'hotelsCom', null]);
+  assert.equal(offers[3].taxesIncluded, false);
+  assert.equal(offers[2].cancelUntil, 'Jul 10');
+});
+
+test('live prices replace the indicative price and keep our links', async () => {
+  process.env.SERPAPI_KEY = 'test';
+  _clearLivePriceCache();
+  const calls = [];
+  const fetchJson = async (params) => { calls.push(params); return googleArts; };
+  const withLinks = { ...arts, affiliateLinks: buildAllAffiliateLinks(arts, quiz) };
+
+  const [h] = await addLivePrices([withLinks], quiz, { fetchJson });
+  assert.equal(h.priceType, 'live');
+  assert.deepEqual(h.bestPrice, { platform: 'agoda', price: 405, total: 2025 });
+  assert.equal(h.bestFlex.platform, 'bookingCom');
+  assert.equal(h.platforms.bookingCom.price, 420);
+  assert.equal(h.platforms.expedia, undefined, 'no Expedia price on Google → none shown');
+  assert.equal(h.platforms.hotelbeds.price, 380, 'supplier rate kept');
+  assert.deepEqual(h.livePrices.cheaperElsewhere, { seller: 'Super.com', price: 390, official: false });
+  assert.equal(h.breakfastPrice, null);
+  assert.equal(h.affiliateLinks.agoda, withLinks.affiliateLinks.agoda, 'outbound link is still ours');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].q, 'Hotel Arts Barcelona');
+  assert.equal(calls[0].check_in_date, '2027-07-15');
+  assert.equal(calls[0].currency, 'EUR');
+  assert.equal(calls[0].children_ages, '1', 'the infant is priced as a 1-year-old');
+
+  await addLivePrices([withLinks], quiz, { fetchJson });
+  assert.equal(calls.length, 1, 'second identical trip is served from the cache');
+  delete process.env.SERPAPI_KEY;
+});
+
+test('ambiguous name: pick the matching property from the list, then fetch it', async () => {
+  process.env.SERPAPI_KEY = 'test';
+  _clearLivePriceCache();
+  const calls = [];
+  const fetchJson = async (params) => {
+    calls.push(params);
+    if (params.property_token) return googleArts;
+    return { properties: [
+      { name: 'Arts Hostel Barcelona', gps_coordinates: { latitude: 41.39, longitude: 2.16 }, property_token: 'WRONG' },
+      { name: 'Hotel Arts Barcelona, a Ritz-Carlton Hotel', gps_coordinates: { latitude: 41.3869, longitude: 2.1962 }, property_token: 'RIGHT' },
+    ] };
+  };
+  const [h] = await addLivePrices([arts], quiz, { fetchJson });
+  assert.equal(calls[1].property_token, 'RIGHT');
+  assert.equal(h.priceType, 'live');
+  delete process.env.SERPAPI_KEY;
+});
+
+test('live prices never break a search', async () => {
+  // No key: untouched, no call.
+  delete process.env.SERPAPI_KEY;
+  let called = false;
+  assert.deepEqual(await addLivePrices([arts], quiz, { fetchJson: async () => { called = true; } }), [arts]);
+  assert.equal(called, false);
+
+  process.env.SERPAPI_KEY = 'test';
+  _clearLivePriceCache();
+  // The source fails: hotel unchanged.
+  assert.deepEqual(await addLivePrices([arts], quiz, { fetchJson: async () => { throw new Error('quota'); } }), [arts]);
+  // Google returns a different hotel: no price attached.
+  const other = { ...googleArts, name: 'W Barcelona' };
+  assert.deepEqual(await addLivePrices([arts], quiz, { fetchJson: async () => other }), [arts]);
+  // Right hotel, but none of our platforms sells it on these dates.
+  _clearLivePriceCache();
+  const none = { ...googleArts, prices: [{ source: 'Super.com', ...rate(390, 1950) }] };
+  const [h] = await addLivePrices([arts], quiz, { fetchJson: async () => none });
+  assert.equal(h.priceType, 'indicative');
+  assert.equal(h.livePrices.found, 0);
+  assert.deepEqual(applyLivePrices(arts, { matched: false }), arts);
+  delete process.env.SERPAPI_KEY;
+});

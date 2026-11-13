@@ -12,6 +12,7 @@ import { matchHotelsWithAI } from '../services/aiMatcher.js';
 import { summariseReviews }  from '../services/reviewSummariser.js';
 import { validateQuiz }      from '../utils/validateQuiz.js';
 import { hasClaude }         from '../services/claude.js';
+import { addLivePrices }     from '../services/livePrices.js';
 
 const router = Router();
 
@@ -67,10 +68,14 @@ router.post('/search', async (req, res, next) => {
     // 2. Match to this traveller (AI suggestions arrive already matched).
     const matched = found.preMatched ? found.hotels : await matchHotelsWithAI(quiz, found.hotels);
 
-    // 3. Review summaries, where real review text exists.
-    const hotels = (await summariseReviews(matched)).map(publicHotel);
+    // 3. Live price per booking platform, for the hotels we will show.
+    //    Demo data keeps its sample prices. Never throws.
+    const priced = found.source === 'mock' ? matched : await addLivePrices(matched, quiz);
 
-    res.json({ hotels, meta: meta(quiz, found, cached, hotels.length) });
+    // 4. Review summaries, where real review text exists.
+    const hotels = (await summariseReviews(priced)).map(publicHotel);
+
+    res.json({ hotels, meta: { ...meta(quiz, found, cached, hotels.length), livePrices: hotels.filter(h => h.priceType === 'live').length } });
   } catch (err) {
     next(err);
   }

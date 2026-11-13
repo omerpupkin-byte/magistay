@@ -1298,6 +1298,9 @@ function sourceNote(meta, hotels){
   if(meta.source==='mock'){
     return '<strong>Demo data.</strong> These hotels, prices and ratings are sample data for testing.';
   }
+  if(hotels.some(function(h){return h.priceType==='live';})){
+    return 'These hotels have rooms on your dates. Prices per booking site were checked a moment ago and can change. The booking site shows the final price before you pay.';
+  }
   if(hotels.some(function(h){return h.priceType==='indicative'&&h.bestPrice;})){
     return 'These hotels have rooms on your dates. Prices shown are indicative rates from our hotel supplier — use the booking buttons to see the exact price on each platform.';
   }
@@ -1369,6 +1372,14 @@ var CURRENCY_SYMBOL={USD:'$',EUR:'€',GBP:'£',ILS:'₪'};
 function money(amount, currency){
   var sym=CURRENCY_SYMBOL[currency||'USD'];
   return sym?sym+amount:amount+' '+esc(currency);
+}
+
+// "just now" / "12 min ago" for a live price check.
+function checkedAgo(live){
+  var t=live&&live.checkedAt?Date.parse(live.checkedAt):NaN;
+  if(isNaN(t)) return 'recently';
+  var min=Math.round((Date.now()-t)/60000);
+  return min<2?'just now':min<60?min+' min ago':'earlier today';
 }
 
 function photoTile(cls, p, withOverlay){
@@ -1468,9 +1479,12 @@ function buildHotelCard(h,idx){
   // ── Price: what we know, labelled for what it is ──
   var priceHtml='';
   if(h.bestPrice&&h.bestPrice.price!=null){
-    var kind=h.priceType==='demo'?'sample price':'indicative';
+    var isLive=h.priceType==='live';
+    var kind=h.priceType==='demo'?'sample price · lowest rate found'
+      :isLive?'on '+esc(PLATFORM_NAMES[h.bestPrice.platform]||'a booking site')+' · checked '+checkedAgo(h.livePrices)
+      :'indicative · lowest rate found';
     priceHtml='<div class="sum-pair">'+
-      '<div class="scard scard-best"><p class="sc-lbl sc-lb">From</p><p class="sc-val">'+money(h.bestPrice.price,cur)+'/night</p><p class="sc-via">'+kind+' · lowest rate found</p></div>'+
+      '<div class="scard scard-best"><p class="sc-lbl sc-lb">'+(isLive?'Lowest price':'From')+'</p><p class="sc-val">'+money(h.bestPrice.price,cur)+'/night</p><p class="sc-via">'+kind+'</p></div>'+
       (h.bestFlex&&h.bestFlex.price!=null
         ?'<div class="scard scard-flex"><p class="sc-lbl sc-lf">Free cancellation</p><p class="sc-val">'+money(h.bestFlex.price,cur)+'/night</p><p class="sc-via">'+esc(h.bestFlex.terms||'refundable rate')+'</p></div>'
         :'<div class="scard scard-flex"><p class="sc-lbl sc-lf">Free cancellation</p><p class="sc-val">—</p><p class="sc-via">no refundable rate found</p></div>')+
@@ -1480,18 +1494,50 @@ function buildHotelCard(h,idx){
 
   // ── Booking buttons: every one carries our affiliate id ──
   var plats=h.platforms||{};
-  var buttons=Object.keys(PLATFORM_NAMES).map(function(key,i){
+  var live=h.livePrices||null;            // set when Google Hotels knows this hotel on these dates
+  var hasLive=h.priceType==='live';
+  // Priced platforms first, cheapest on top; the rest keep their order.
+  var keys=Object.keys(PLATFORM_NAMES).slice().sort(function(a,b){
+    var pa=plats[a]&&plats[a].price, pb=plats[b]&&plats[b].price;
+    if(pa&&pb) return pa-pb;
+    return pa?-1:pb?1:0;
+  });
+  var buttons=keys.map(function(key,i){
     var link=links[key]||buildFallbackLink(key,h);
-    var known=plats[key]&&plats[key].price;
+    var p=plats[key]||{};
+    var known=!!p.price;
+    var isLow=hasLive&&known&&i===0;
+    var title, terms;
+    if(known&&p.live){
+      title=isLow?'Lowest price found':'Price checked '+checkedAgo(live);
+      terms=(p.freeCancellation?'Free cancellation'+(p.cancelUntil?' until '+esc(p.cancelUntil):'')+' · ':'')+
+            (p.taxesIncluded?'incl. taxes & fees':'taxes may be extra')+
+            (p.total?' · '+money(p.total,cur)+' total':'');
+    }else if(known){
+      title='Sample rate';
+      terms='Opens '+PLATFORM_NAMES[key]+' with your dates and guests filled in';
+    }else if(live){
+      title='No price found for your dates';
+      terms='May be sold out on '+PLATFORM_NAMES[key]+', open to check';
+    }else{
+      title='See today\'s price';
+      terms='Opens '+PLATFORM_NAMES[key]+' with your dates and guests filled in';
+    }
     return '<a href="'+esc(link)+'" target="_blank" rel="noopener sponsored" data-platform="'+key+'" class="book-link" style="text-decoration:none;display:block;">'+
       '<div class="ppr'+(i===0?' bfl':'')+'">'+
         '<div class="ppr-logo"><p class="ppr-logo-t">'+PLATFORM_NAMES[key]+'</p></div>'+
-        '<div class="ppr-body"><p class="ppr-room">'+(known?'Sample rate':'See today\'s price')+'</p>'+
-          '<p class="ppr-terms">Opens '+PLATFORM_NAMES[key]+' with your dates and guests filled in</p></div>'+
-        '<div class="ppr-price-col">'+(known?'<p class="ppr-amt">'+money(plats[key].price,cur)+'</p><p class="ppr-night">/night</p>':'')+
+        '<div class="ppr-body"><p class="ppr-room">'+title+'</p>'+
+          '<p class="ppr-terms">'+terms+'</p></div>'+
+        '<div class="ppr-price-col">'+(known?'<p class="ppr-amt">'+money(p.price,cur)+'</p><p class="ppr-night">/night</p>':'')+
           '<p style="font-size:12px;font-weight:600;color:var(--coral);">Check &amp; book →</p></div>'+
       '</div></a>';
   }).join('');
+  // Honest about the rest of the market: if another seller is cheaper, say so.
+  var else_=live&&live.cheaperElsewhere;
+  if(else_){
+    buttons+='<p class="ppr-terms" style="margin:2px 2px 0;">Also seen: '+money(else_.price,cur)+'/night on '+
+      esc(else_.official?'the hotel\'s own site':else_.seller)+'.</p>';
+  }
 
   var card=document.createElement('div');
   card.className='hcard'+(isTop?' top':'');

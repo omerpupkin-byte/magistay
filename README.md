@@ -30,11 +30,22 @@ Open `magistay.html` through a local web server (for example `python -m http.ser
 
 The response says which one was used in `meta.source`, and the page tells the traveller.
 
+## Live prices per booking platform
+
+`src/services/livePrices.js` asks Google Hotels (through SerpApi, `SERPAPI_KEY`) what each booking site charges for the five hotels we show, on the traveller's dates and for their party. Booking.com, Agoda, Expedia and Hotels.com prices go on the booking buttons; the cheapest is marked.
+
+- A price is attached only when Google's hotel is clearly the same hotel (same spot, matching name). No match, no price.
+- A platform with no price is shown as "no price found for your dates".
+- If another seller is cheaper than all four, the page says so.
+- Without the key, or when the lookup fails, the site shows the supplier's indicative price as before.
+- Cost: 1 SerpApi search per hotel shown (2 for an ambiguous name), cached 20 minutes.
+- The buttons still open OUR affiliate links (a search for the hotel on the platform), so the price on arrival can differ slightly.
+
 ## Rules the code keeps about facts
 
 - A need is marked **confirmed** only when the hotel's own data says so. Otherwise it is "not confirmed — ask the hotel". Nothing is guessed.
 - Guest ratings, review summaries and photos are shown only when they are real. A hotel without them is shown without them.
-- Hotelbeds rates are wholesale rates, shown as **indicative**. The exact price is on the booking platform.
+- Hotelbeds rates are wholesale rates, shown as **indicative** and only when no live price was found.
 - AI suggestions are labelled as suggestions, not live inventory.
 
 ## Booking links
@@ -84,6 +95,7 @@ src/services/
   aiMatcher.js                ranking + reasons + checklist (Claude, or rules without a key)
   travellerProfile.js         quiz → brief for the AI, and the list of needs to check
   affiliateLinks.js           booking links with affiliate ids
+  livePrices.js               live price per booking platform (Google Hotels via SerpApi)
   reviewSummariser.js         review themes, only from real review text
   geocoding.js                destination → coordinates and size
   claude.js                   shared Claude client

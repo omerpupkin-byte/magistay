@@ -62,7 +62,7 @@ app.get('/health', (_req, res) => {
   // Which pieces are switched on — booleans only, never the keys themselves.
   res.json({
     status:  'ok',
-    version: '0.2.0',
+    version: '0.3.0',
     mode:    process.env.ANTHROPIC_API_KEY ? 'ai' : 'mock',
     sources: {
       claude:    !!process.env.ANTHROPIC_API_KEY,
@@ -71,6 +71,7 @@ app.get('/health', (_req, res) => {
       hotelbedsEnv: process.env.HOTELBEDS_ENV === 'production' ? 'production' : 'test',
       booking:   !!process.env.BOOKING_API_KEY,
       expedia:   !!process.env.EXPEDIA_API_KEY,
+      livePrices: !!process.env.SERPAPI_KEY && process.env.LIVE_PRICES !== 'off',
     },
     ts:      new Date().toISOString(),
   });
