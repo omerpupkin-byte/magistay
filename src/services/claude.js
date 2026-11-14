@@ -5,7 +5,10 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5';
+// The matcher runs while a traveller waits, so the default is the fastest
+// model. ANTHROPIC_MODEL overrides it (e.g. a larger model for quality tests).
+const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5';
+export function claudeModel() { return MODEL; }
 
 let client = null;
 // The key as it should be sent: a pasted key often arrives with a space,
@@ -17,7 +20,7 @@ function apiKey() {
 
 function getClient() {
   if (!apiKey()) return null;
-  if (!client) client = new Anthropic({ apiKey: apiKey(), timeout: 45_000, maxRetries: 1 });
+  if (!client) client = new Anthropic({ apiKey: apiKey(), timeout: 30_000, maxRetries: 0 });
   return client;
 }
 

@@ -8,7 +8,8 @@
 
 import { Router }            from 'express';
 import { searchHotels }      from '../services/hotelSearch.js';
-import { matchHotelsWithAI, lastAIFailure } from '../services/aiMatcher.js';
+import { matchHotelsWithAI, lastAIFailure, lastAIDurationMs } from '../services/aiMatcher.js';
+import { claudeModel } from '../services/claude.js';
 import { summariseReviews }  from '../services/reviewSummariser.js';
 import { validateQuiz }      from '../utils/validateQuiz.js';
 import { hasClaude }         from '../services/claude.js';
@@ -118,6 +119,7 @@ router.post('/search', async (req, res, next) => {
 // when something between you and the server keeps an old answer.
 router.get(['/search/check', '/search/check/:run'], async (req, res, next) => {
   try {
+    const startedAt = Date.now();
     const q = req.query;
     const list = v => (typeof v === 'string' && v ? v.split(',').map(x => x.trim()).filter(Boolean) : []);
     const report = [];
@@ -146,7 +148,10 @@ router.get(['/search/check', '/search/check/:run'], async (req, res, next) => {
         links: Object.fromEntries(['bookingCom', 'agoda', 'expedia', 'hotelsCom'].map(k => [k, h.affiliateLinks?.[k] ? destinationOf(h.affiliateLinks[k]) : null])),
         tracked: ['bookingCom', 'agoda', 'expedia', 'hotelsCom'].filter(k => /\/go\?/.test(h.affiliateLinks?.[k] || '')),
       })),
-      aiMatcher: body.meta.matching === 'ai' ? 'ok' : { fellBackToRules: true, lastFailure: lastAIFailure() },
+      aiMatcher: body.meta.matching === 'ai'
+        ? { ok: true, model: claudeModel(), answeredInMs: lastAIDurationMs() }
+        : { fellBackToRules: true, model: claudeModel(), lastFailure: lastAIFailure() },
+      tookMs: Date.now() - startedAt,
       livePriceLookups: report,
     });
   } catch (err) {

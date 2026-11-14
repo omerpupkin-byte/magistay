@@ -13,17 +13,19 @@ import { askClaudeJSON, hasClaude } from './claude.js';
 import { describeTraveller, listNeeds, checkAllNeeds } from './travellerProfile.js';
 
 const MAX_RESULTS    = 5;
-const MAX_CANDIDATES = 20;   // sent to the AI; keeps the call fast
+const MAX_CANDIDATES = 14;   // sent to the AI; keeps the call fast
 
 // ── Main entry ────────────────────────────────────────────────
 // `limit` is how many ranked hotels to return. The search asks for more
 // than it shows, so a hotel that turns out not to be bookable can be
 // replaced by the next best match. Claude ranks at most MAX_AI_RANKED
 // (a longer answer is slow); the rest of the list follows the rule ranking.
-const MAX_AI_RANKED = 8;
+const MAX_AI_RANKED = 6;
 
 // Why the last AI call fell back to rules, for the check endpoint.
 let lastFailure = null;
+let lastDurationMs = null;
+export function lastAIDurationMs() { return lastDurationMs; }
 export function lastAIFailure() { return lastFailure; }
 
 export async function matchHotelsWithAI(quiz, hotels, { limit = MAX_RESULTS } = {}) {
@@ -43,7 +45,10 @@ export async function matchHotelsWithAI(quiz, hotels, { limit = MAX_RESULTS } = 
   const aiCount   = Math.min(limit, MAX_AI_RANKED);
   try {
     console.log(`[AI MATCHER] Calling Claude with ${shortlist.length} candidates...`);
-    const parsed = await askClaudeJSON(buildMatchPrompt(quiz, shortlist, aiCount), { maxTokens: 600 * aiCount });
+    const started = Date.now();
+    const parsed = await askClaudeJSON(buildMatchPrompt(quiz, shortlist, aiCount), { maxTokens: 450 * aiCount });
+    lastDurationMs = Date.now() - started;
+    console.log(`[AI MATCHER] Claude answered in ${lastDurationMs} ms`);
     const ranked = applyAIResult(quiz, shortlist, parsed.matches || []).slice(0, aiCount);
     if (ranked.length === 0) throw new Error('AI returned no usable matches');
     lastFailure = null;
@@ -140,7 +145,7 @@ function formatHotelForPrompt(h, i) {
   }
   if (h.available === false) lines.push('  Availability: NOT confirmed for these dates');
   if (h.boards?.length)      lines.push(`  Meal plans offered: ${h.boards.slice(0, 6).join(', ')}`);
-  if (h.facilities?.length)  lines.push(`  Facilities: ${h.facilities.slice(0, 45).join('; ')}`);
+  if (h.facilities?.length)  lines.push(`  Facilities: ${h.facilities.slice(0, 30).join('; ')}`);
   else if (h.amenities?.length) lines.push(`  Amenities: ${h.amenities.join(', ')}`);
   else lines.push('  Facilities: no facility data');
   if (h.excluded?.length)    lines.push(`  Stated as NOT offered: ${h.excluded.slice(0, 20).join('; ')}`);
@@ -148,7 +153,7 @@ function formatHotelForPrompt(h, i) {
   if (h.locationRating != null) lines.push(`  Location rating: ${h.locationRating}/5`);
   if (h.nearby?.length)      lines.push(`  Nearby: ${h.nearby.join('; ')}`);
   if (h.checkInTime || h.checkOutTime) lines.push(`  Check-in from ${h.checkInTime || '?'}, check-out by ${h.checkOutTime || '?'}`);
-  if (h.description)         lines.push(`  Description: ${h.description.slice(0, 380)}`);
+  if (h.description)         lines.push(`  Description: ${h.description.slice(0, 240)}`);
   return lines.join('\n');
 }
 
