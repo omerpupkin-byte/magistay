@@ -6,6 +6,9 @@ import 'dotenv/config';
 import express      from 'express';
 import cors         from 'cors';
 import searchRouter from './routes/search.js';
+import goRouter     from './routes/go.js';
+import { clickStats } from './services/clickLinks.js';
+import { googleHotelsEnabled } from './services/googleHotelsAPI.js';
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -35,7 +38,7 @@ const hits = new Map();
 const WINDOW_MS = 10 * 60 * 1000, MAX_SEARCHES = 20;
 app.use('/api/search', (req, res, next) => {
   // POST /api/search and GET /api/search/check both run a full search.
-  if (req.method !== 'POST' && !(req.method === 'GET' && req.path === '/check')) return next();
+  if (req.method !== 'POST' && !(req.method === 'GET' && req.path.startsWith('/check'))) return next();
   const now = Date.now();
   const recent = (hits.get(req.ip) || []).filter(t => now - t < WINDOW_MS);
   if (recent.length >= MAX_SEARCHES) {
@@ -56,24 +59,30 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 // ── Routes ─────────────────────────────────────────────────────
+// Search answers are per traveller and per moment: never cache them.
+app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 app.use('/api', searchRouter);
+app.use('/go', goRouter);              // tracked booking clicks
 
 // ── Health check ───────────────────────────────────────────────
 app.get('/health', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
   // Which pieces are switched on — booleans only, never the keys themselves.
   res.json({
     status:  'ok',
-    version: '0.3.4',
+    version: '0.4.0',
     mode:    process.env.ANTHROPIC_API_KEY ? 'ai' : 'mock',
     sources: {
       claude:    !!process.env.ANTHROPIC_API_KEY,
       geocoding: !!process.env.GOOGLE_MAPS_API_KEY,
+      googleHotels: googleHotelsEnabled(),
       hotelbeds: !!process.env.HOTELBEDS_API_KEY,
       hotelbedsEnv: process.env.HOTELBEDS_ENV === 'production' ? 'production' : 'test',
       booking:   !!process.env.BOOKING_API_KEY,
       expedia:   !!process.env.EXPEDIA_API_KEY,
       livePrices: !!process.env.SERPAPI_KEY && process.env.LIVE_PRICES !== 'off',
     },
+    clicks:  clickStats(),
     ts:      new Date().toISOString(),
   });
 });

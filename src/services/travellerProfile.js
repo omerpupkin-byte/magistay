@@ -93,6 +93,7 @@ const NEED_RULES = [
 
 // Status of one need for one hotel, from the data we actually hold:
 //   'yes'      the hotel's data confirms it
+//   'no'       the hotel's listing states it is not offered
 //   'unknown'  the data does not say — never guessed
 export function checkNeed(need, hotel) {
   const rule = NEED_RULES.find(r => r.need.test(need));
@@ -107,6 +108,11 @@ export function checkNeed(need, hotel) {
     return { need, status: 'unknown', note: hasWifi ? 'Wi-Fi listed; speed not stated' : undefined };
   }
 
+  // The listing states outright that the hotel does NOT offer it.
+  const denied = rule.text && (hotel.excluded || []).find(x => rule.text.test(x));
+  if (denied) return { need, status: 'no', note: String(denied).slice(0, 60) };
+
+  if (rule.rate === 'breakfast' && hotel.freeBreakfast) return { need, status: 'yes', note: 'free breakfast listed' };
   if (rule.amenity?.some(a => amenities.includes(a))) return { need, status: 'yes' };
   if (rule.text && rule.text.test(haystack))           return { need, status: 'yes' };
   if (rule.rate === 'breakfast' && hotel.breakfastPrice != null) {

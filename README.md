@@ -24,6 +24,7 @@ Open `magistay.html` through a local web server (for example `python -m http.ser
 |---|---|---|
 | Booking.com Demand API | `BOOKING_API_KEY` (Managed Affiliate Partners only — not approved yet) | — |
 | Expedia Rapid API | `EXPEDIA_API_KEY` (not approved yet) | — |
+| **Google Hotels** (via SerpApi) | `SERPAPI_KEY` | Hotels some booking site can sell on these dates, lowest listed price, amenities (offered and not offered), Google rating, review themes, photos. First choice. |
 | **Hotelbeds** | `HOTELBEDS_API_KEY` + `HOTELBEDS_API_SECRET` | Live availability, wholesale rates, photos, facilities, TripAdvisor rating |
 | **AI suggestions** | `ANTHROPIC_API_KEY` | Well-known hotels from the model's general knowledge. No price, no availability, no rating. Used when a supplier has nothing for the destination or is down. |
 | Demo data | nothing | Built-in sample hotels, for development without any keys |
@@ -40,6 +41,10 @@ The response says which one was used in `meta.source`, and the page tells the tr
 - Without the key, or when the lookup fails, the site shows the supplier's indicative price as before.
 - Cost: 1 SerpApi search per hotel shown (2 for an ambiguous name), cached 20 minutes.
 - The buttons still open OUR affiliate links (a search for the hotel on the platform), so the price on arrival can differ slightly.
+
+## Tracked clicks
+
+Every booking button points at `GET /go?to=<affiliate link>&p=<platform>&h=<hotel>&s=<search id>&c=<channel>` on this server. `/go` writes a `[CLICK]` log line, adds a click id where the affiliate network reads a sub-id (`tag` for Agoda, `sid` for CJ / Booking.com, `label` for a direct Booking.com aid) and redirects. The click id looks like `web-1a2b3c4d-9f8e7d6c` (channel, search, random), so a commission in a network report leads back to the search, hotel, platform and channel. `/go` only redirects to the booking sites and CJ; anything else gets a 400. Clicks are kept in the log and in memory (see `clicks` in `/health`); a database is the next step.
 
 ## Rules the code keeps about facts
 
@@ -87,14 +92,17 @@ Searches are limited to 20 per visitor per 10 minutes. Supplier results are cach
 ```
 magistay.html                 the site
 src/server.js                 Express app, CORS, rate limit, /health
-src/routes/search.js          POST /api/search
+src/routes/search.js          POST /api/search, GET /api/search/check
+src/routes/go.js              GET /go (tracked booking clicks)
 src/services/
   hotelSearch.js              picks the hotel source
   hotelbedsAPI.js             Hotelbeds availability + content
   aiCandidates.js             AI suggestions when no supplier has inventory
   aiMatcher.js                ranking + reasons + checklist (Claude, or rules without a key)
   travellerProfile.js         quiz → brief for the AI, and the list of needs to check
+  googleHotelsAPI.js          Google Hotels candidates (via SerpApi)
   affiliateLinks.js           booking links with affiliate ids
+  clickLinks.js               /go links: click record + sub-id
   livePrices.js               live price per booking platform (Google Hotels via SerpApi)
   reviewSummariser.js         review themes, only from real review text
   geocoding.js                destination → coordinates and size

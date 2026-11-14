@@ -2,7 +2,8 @@
 // Finds candidate hotels for a quiz. Picks the best source available:
 //
 //   1. Booking.com Demand API / Expedia Rapid   (when their keys are set)
-//   2. Hotelbeds                                (HOTELBEDS_API_KEY)
+//   2. Google Hotels                            (SERPAPI_KEY)
+//   2b. Hotelbeds                               (HOTELBEDS_API_KEY; used if Google fails)
 //   3. AI suggestions from general knowledge    (when a supplier has
 //      nothing for the destination, fails, or none is configured)
 //   4. Built-in demo hotels                     (no keys at all — local dev only)
@@ -15,6 +16,7 @@ import { geocode }               from './geocoding.js';
 import { searchExpedia }         from './expediaAPI.js';
 import { searchBookingCom }      from './bookingAPI.js';
 import { searchHotelbeds }       from './hotelbedsAPI.js';
+import { searchGoogleHotels, googleHotelsEnabled } from './googleHotelsAPI.js';
 import { buildAllAffiliateLinks } from './affiliateLinks.js';
 import { suggestHotelsFromKnowledge, aiFallbackEnabled } from './aiCandidates.js';
 
@@ -34,6 +36,9 @@ export async function searchHotels(quiz) {
   const suppliers = [];
   if (process.env.BOOKING_API_KEY)   suppliers.push(['booking',   searchBookingCom]);
   if (process.env.EXPEDIA_API_KEY)   suppliers.push(['expedia',   searchExpedia]);
+  // Google Hotels lists only hotels some booking site can sell on these
+  // dates, so it comes before the wholesale supplier.
+  if (googleHotelsEnabled())         suppliers.push(['google_hotels', searchGoogleHotels]);
   if (process.env.HOTELBEDS_API_KEY) suppliers.push(['hotelbeds', searchHotelbeds]);
 
   // Live inventory first.

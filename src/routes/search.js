@@ -13,6 +13,7 @@ import { summariseReviews }  from '../services/reviewSummariser.js';
 import { validateQuiz }      from '../utils/validateQuiz.js';
 import { hasClaude }         from '../services/claude.js';
 import { pickBookable, livePricesEnabled } from '../services/livePrices.js';
+import { trackHotelLinks, destinationOf, newSearchId } from '../services/clickLinks.js';
 
 const router = Router();
 
@@ -48,7 +49,7 @@ function setCache(key, data) {
 // ── The search itself ─────────────────────────────────────────
 // Returns { status, body }. `report`, when given, collects the live-price
 // findings for every hotel that was checked.
-async function runSearch(input, report = null) {
+async function runSearch(input, report = null, ctx = {}) {
   const { valid, error, quiz } = validateQuiz(input);
   if (!valid) return { status: 400, body: { error: `Invalid request: ${error}` } };
   if (!quiz.destination) return { status: 400, body: { error: 'Invalid request: destination is required' } };
@@ -82,9 +83,15 @@ async function runSearch(input, report = null) {
   const priced = live ? await pickBookable(matched, quiz, { show: SHOW, report }) : matched.slice(0, SHOW);
 
   // 4. Review summaries, where real review text exists.
-  const hotels = (await summariseReviews(priced)).map(publicHotel);
+  // 5. Booking buttons go through /go, so every click is recorded and
+  //    stamped with a click id the affiliate networks report back.
+  const searchId = newSearchId();
+  const hotels = (await summariseReviews(priced))
+    .map(h => trackHotelLinks(h, { baseUrl: ctx.baseUrl, searchId, channel: ctx.channel || 'web' }))
+    .map(publicHotel);
 
   const m = meta(quiz, found, cached, hotels.length);
+  m.searchId = searchId;
   // What actually ranked these hotels, not what is configured.
   if (!found.preMatched) m.matching = hotels.some(h => h.matchedBy === 'ai') ? 'ai' : 'rules';
   m.livePrices = hotels.filter(h => h.priceType === 'live').length;
@@ -94,7 +101,7 @@ async function runSearch(input, report = null) {
 // ── POST /api/search ──────────────────────────────────────────
 router.post('/search', async (req, res, next) => {
   try {
-    const { status, body } = await runSearch(req.body);
+    const { status, body } = await runSearch(req.body, null, context(req, req.body?.channel));
     res.status(status).json(body);
   } catch (err) {
     next(err);
@@ -107,7 +114,9 @@ router.post('/search', async (req, res, next) => {
 // and what the live-price lookup found for every hotel it checked.
 // For checking the live site without clicking through the quiz.
 //   /api/search/check?destination=Madrid&checkIn=2026-11-24&checkOut=2026-11-27&adults=2
-router.get('/search/check', async (req, res, next) => {
+// Add any extra path segment (/api/search/check/2?...) to force a fresh run
+// when something between you and the server keeps an old answer.
+router.get(['/search/check', '/search/check/:run'], async (req, res, next) => {
   try {
     const q = req.query;
     const list = v => (typeof v === 'string' && v ? v.split(',').map(x => x.trim()).filter(Boolean) : []);
@@ -119,7 +128,7 @@ router.get('/search/check', async (req, res, next) => {
       stars: Number(q.stars) || 0, budget: q.budget, radiusKm: Number(q.radiusKm) || undefined,
       priorities: list(q.priorities), purpose: list(q.purpose), vibes: list(q.vibes),
       freeText: typeof q.freeText === 'string' ? q.freeText : '',
-    }, report);
+    }, report, context(req, 'check'));
     if (status !== 200) return res.status(status).json(body);
 
     res.json({
@@ -127,11 +136,15 @@ router.get('/search/check', async (req, res, next) => {
       shown: body.hotels.map((h, i) => ({
         rank: i + 1, name: h.name, matchScore: h.matchScore, matchedBy: h.matchedBy,
         matchReason: h.matchReason, priceType: h.priceType, currency: h.currency,
-        bestPrice: h.bestPrice, supplierPrice: h.platforms?.hotelbeds?.price ?? null,
+        stars: h.stars, rating: h.riScore, reviews: h.totalReviews, distanceKm: h.distanceKm,
+        needs: h.needsCheck, highlights: h.highlights,
+        bestPrice: h.bestPrice, listPrice: h.platforms?.google?.price ?? h.platforms?.hotelbeds?.price ?? null,
         platforms: Object.fromEntries(['bookingCom', 'agoda', 'expedia', 'hotelsCom'].map(k => [k, h.platforms?.[k]
           ? { perNight: h.platforms[k].price, total: h.platforms[k].total, directLink: !!h.platforms[k].direct }
           : null])),
-        links: { bookingCom: h.affiliateLinks?.bookingCom, agoda: h.affiliateLinks?.agoda, expedia: h.affiliateLinks?.expedia, hotelsCom: h.affiliateLinks?.hotelsCom },
+        // Where each button finally leads (the page itself gets these wrapped in /go).
+        links: Object.fromEntries(['bookingCom', 'agoda', 'expedia', 'hotelsCom'].map(k => [k, h.affiliateLinks?.[k] ? destinationOf(h.affiliateLinks[k]) : null])),
+        tracked: ['bookingCom', 'agoda', 'expedia', 'hotelsCom'].filter(k => /\/go\?/.test(h.affiliateLinks?.[k] || '')),
       })),
       aiMatcher: body.meta.matching === 'ai' ? 'ok' : { fellBackToRules: true, lastFailure: lastAIFailure() },
       livePriceLookups: report,
@@ -141,6 +154,16 @@ router.get('/search/check', async (req, res, next) => {
   }
 });
 
+// Where this API is reached from the outside (for /go links) and which
+// channel the search came from (web, wa, check).
+function context(req, channel) {
+  const host  = req.get('host') || '';
+  const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
+  const baseUrl = process.env.PUBLIC_API_URL || (host ? `${local ? 'http' : 'https'}://${host}` : '');
+  const ch = String(channel || 'web').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'web';
+  return { baseUrl, channel: ch };
+}
+
 function meta(quiz, found, cached, count) {
   return {
     count,
@@ -148,7 +171,7 @@ function meta(quiz, found, cached, count) {
     checkIn:     quiz.checkIn,
     checkOut:    quiz.checkOut,
     nights:      quiz.nights || null,
-    // hotelbeds | booking | expedia | ai_knowledge | mock | none
+    // google_hotels | hotelbeds | booking | expedia | ai_knowledge | mock | none
     source:      found.source,
     candidates:  found.hotels.length,
     matching:    hasClaude() ? 'ai' : 'rules',

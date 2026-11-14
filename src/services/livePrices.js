@@ -20,7 +20,7 @@
 
 import { buildDirectLink, buildAllAffiliateLinks, describeSellerLink } from './affiliateLinks.js';
 
-const ENDPOINT   = 'https://serpapi.com/search.json';
+const ENDPOINT   = process.env.SERPAPI_ENDPOINT || 'https://serpapi.com/search.json';   // overridable for local testing
 const TIMEOUT_MS = 12_000;
 const CACHE_TTL  = 20 * 60 * 1000;
 const CACHE_MAX  = 500;
@@ -118,18 +118,26 @@ async function lookup(hotel, quiz, fetchJson) {
 
 async function fetchFromGoogle(hotel, quiz, currency, fetchJson) {
   const base = tripQuery(quiz, currency);
+  let res;
 
-  // 1. Search by "Hotel name, City". For an exact name Google answers with
-  //    the property itself; otherwise with a list to choose from.
-  let res = await fetchJson({ ...base, q: searchText(hotel) });
+  if (hotel.googleToken) {
+    // The hotel came from Google Hotels: ask for it by its token. No name
+    // matching, no chance of pricing a different hotel.
+    res = await fetchJson({ ...base, q: hotel.name, property_token: hotel.googleToken });
+    if (!isProperty(res)) return { matched: false };
+  } else {
+    // 1. Search by "Hotel name, City". For an exact name Google answers with
+    //    the property itself; otherwise with a list to choose from.
+    res = await fetchJson({ ...base, q: searchText(hotel) });
 
-  if (!isProperty(res)) {
-    const best = pickProperty(hotel, res?.properties || []);
-    if (!best?.property_token) return { matched: false };
-    res = await fetchJson({ ...base, property_token: best.property_token });
+    if (!isProperty(res)) {
+      const best = pickProperty(hotel, res?.properties || []);
+      if (!best?.property_token) return { matched: false };
+      res = await fetchJson({ ...base, property_token: best.property_token });
+    }
+
+    if (!isProperty(res) || !sameHotel(hotel, res)) return { matched: false };
   }
-
-  if (!isProperty(res) || !sameHotel(hotel, res)) return { matched: false };
 
   return {
     matched:   true,
@@ -140,7 +148,7 @@ async function fetchFromGoogle(hotel, quiz, currency, fetchJson) {
   };
 }
 
-function tripQuery(quiz, currency) {
+export function tripQuery(quiz, currency) {
   const children = Math.max(0, Number(quiz.children) || 0);
   const infants  = Math.max(0, Number(quiz.infants)  || 0);
   const given    = Array.isArray(quiz.childAges) ? quiz.childAges : [];
@@ -339,7 +347,7 @@ export function applyLivePrices(hotel, live, quiz = {}) {
 }
 
 // ── HTTP ──────────────────────────────────────────────────────
-async function serpApiFetch(params) {
+export async function serpApiFetch(params) {
   const url = `${ENDPOINT}?${new URLSearchParams({ ...params, api_key: process.env.SERPAPI_KEY })}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
   const body = await res.json().catch(() => null);

@@ -76,6 +76,8 @@ Judge fit the way a great agent would: who is travelling and why, the stated mus
 Rules about facts — these matter more than anything else:
 - Use ONLY the data given above for each hotel. Do not add facts from memory.
 - If the data does not say whether the hotel has something, the status is "unknown". Never guess "yes".
+- "Stated as NOT offered" is a fact: that need is "no".
+- Review themes are evidence about quality (sleep, cleanliness, service...), not proof that a facility exists.
 - Prices shown are indicative. Do not promise a price.
 
 Return ONLY valid JSON, no prose around it:
@@ -115,6 +117,11 @@ function formatHotelForPrompt(h, i) {
   if (h.facilities?.length)  lines.push(`  Facilities: ${h.facilities.slice(0, 45).join('; ')}`);
   else if (h.amenities?.length) lines.push(`  Amenities: ${h.amenities.join(', ')}`);
   else lines.push('  Facilities: no facility data');
+  if (h.excluded?.length)    lines.push(`  Stated as NOT offered: ${h.excluded.slice(0, 20).join('; ')}`);
+  if (h.reviewThemes?.length) lines.push(`  What guest reviews say: ${h.reviewThemes.map(t => `${t.theme} ${Math.round(100 * t.positive / Math.max(1, t.mentions))}% positive of ${t.mentions} mentions`).join('; ')}`);
+  if (h.locationRating != null) lines.push(`  Location rating: ${h.locationRating}/5`);
+  if (h.nearby?.length)      lines.push(`  Nearby: ${h.nearby.join('; ')}`);
+  if (h.checkInTime || h.checkOutTime) lines.push(`  Check-in from ${h.checkInTime || '?'}, check-out by ${h.checkOutTime || '?'}`);
   if (h.description)         lines.push(`  Description: ${h.description.slice(0, 380)}`);
   return lines.join('\n');
 }

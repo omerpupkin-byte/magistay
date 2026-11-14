@@ -483,3 +483,140 @@ test('search links use the name the booking sites know; long reserve is worked t
   assert.equal(calls, 7);
   delete process.env.SERPAPI_KEY;
 });
+
+// ── Google Hotels as the hotel source ─────────────────────────
+import { searchGoogleHotels, normaliseProperty } from '../src/services/googleHotelsAPI.js';
+import { trackedLink, trackHotelLinks, resolveClick, destinationOf, isAllowedDestination } from '../src/services/clickLinks.js';
+
+const gProp = (over = {}) => ({
+  type: 'hotel', name: 'Hotel Uno', description: 'Quiet rooms near the park.', link: 'https://uno.example',
+  property_token: 'TOK1', gps_coordinates: { latitude: 40.42, longitude: -3.70 },
+  check_in_time: '3:00 PM', check_out_time: '12:00 PM',
+  rate_per_night: { extracted_lowest: 187, extracted_before_taxes_fees: 154, extracted_after_taxes_fees: 187 },
+  nearby_places: [{ name: 'Gran Via', transportations: [{ type: 'Walking', duration: '5 min' }] }],
+  extracted_hotel_class: 4,
+  images: [{ thumbnail: 'https://lh3.googleusercontent.com/p/abc=s287-w287-h192-n-k-no-v1', original_image: 'https://lh5.googleusercontent.com/p/abc=s10000' },
+           { thumbnail: 'https://t.example/x.jpg', original_image: 'https://cdn.example/full.jpg' }],
+  overall_rating: 4.6, reviews: 1550, location_rating: 4.8,
+  reviews_breakdown: [{ name: 'Sleep', total_mentioned: 120, positive: 100, negative: 15 }, { name: 'Gym', total_mentioned: 4, positive: 4, negative: 0 }],
+  amenities: ['Free Wi-Fi', 'Pool', 'Pet-friendly', 'Free breakfast', 'Air conditioning'],
+  excluded_amenities: ['No beach access', 'No airport shuttle'],
+  ...over,
+});
+const madrid = { ...quiz, destination: 'Madrid', coords: { lat: 40.4168, lng: -3.7038, city: 'Madrid', country: 'Spain' } };
+
+test('Google Hotels: a property becomes a hotel the matcher can judge', () => {
+  const h = normaliseProperty(gProp(), madrid, 'EUR');
+  assert.equal(h.id, 'google-TOK1');
+  assert.equal(h.source, 'google_hotels');
+  assert.equal(h.stars, 4);
+  assert.equal(h.riScore, 9.2, '4.6 of 5 shown as 9.2 of 10');
+  assert.equal(h.ratingSource, 'Google');
+  assert.deepEqual(h.bestPrice, { platform: 'google', price: 187 });
+  assert.equal(h.priceType, 'indicative');
+  assert.ok(h.distanceKm < 1);
+  assert.ok(['wifi', 'pool', 'pet', 'breakfast', 'air_conditioning'].every(a => h.amenities.includes(a)));
+  assert.equal(h.photos.main.url, 'https://lh5.googleusercontent.com/p/abc=s1200', 'page-sized photo, not the 10000px original');
+  assert.equal(h.photos.thumb1.url, 'https://cdn.example/full.jpg');
+  assert.deepEqual(h.reviewThemes, [{ theme: 'Sleep', mentions: 120, positive: 100, negative: 15 }], 'themes with a handful of mentions are dropped');
+  assert.deepEqual(h.nearby, ['Gran Via (5 min walking)']);
+
+  // The checklist reads the listing both ways.
+  assert.equal(checkNeed('Pool', h).status, 'yes');
+  assert.equal(checkNeed('Beach access', h).status, 'no', 'the listing says there is none');
+  assert.equal(checkNeed('Breakfast included', h).status, 'yes');
+  assert.equal(checkNeed('Spa', h).status, 'unknown');
+  assert.match(buildMatchPrompt(madrid, [baselineScore(madrid, h)]), /Stated as NOT offered: No beach access[\s\S]*Sleep 83% positive of 120 mentions/);
+});
+
+test('Google Hotels: search pages through results and keeps only bookable hotels', async () => {
+  const calls = [];
+  const fetchJson = async (params) => {
+    calls.push(params);
+    if (!params.next_page_token) return {
+      properties: [gProp(), gProp({ name: 'Ad Hotel', property_token: 'AD', sponsored: true }),
+                   gProp({ name: 'Sold Out', property_token: 'SO', rate_per_night: undefined }),
+                   gProp({ name: 'Flat', property_token: 'VR', type: 'vacation rental' })],
+      serpapi_pagination: { next_page_token: 'P2' },
+    };
+    return { properties: [gProp(), gProp({ name: 'Hotel Dos', property_token: 'TOK2' })] };
+  };
+  const hotels = await searchGoogleHotels({ ...madrid, stars: 4, budget: '150_250' }, { fetchJson });
+  assert.deepEqual(hotels.map(h => h.name), ['Hotel Uno', 'Hotel Dos'], 'no ads, no sold-out, no rentals, no duplicates');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].q, 'Hotels in Madrid');
+  assert.equal(calls[0].hotel_class, '4,5');
+  assert.equal(calls[0].max_price, '325');
+  assert.equal(calls[0].check_in_date, '2027-07-15');
+  assert.equal(calls[1].next_page_token, 'P2');
+  assert.deepEqual(await searchGoogleHotels({ ...madrid, checkIn: '' }, { fetchJson }), [], 'no dates, no search');
+});
+
+test('Google Hotels: prices per site are read by token, links are ours', async () => {
+  process.env.SERPAPI_KEY = 'test';
+  _clearLivePriceCache();
+  const base = normaliseProperty(gProp(), madrid, 'EUR');
+  const hotel = { ...base, affiliateLinks: buildAllAffiliateLinks(base, madrid) };
+  const calls = [];
+  const fetchJson = async (params) => {
+    calls.push(params);
+    return { type: 'hotel', name: 'A Completely Different Name', gps_coordinates: { latitude: 1, longitude: 1 },
+             prices: [{ source: 'Agoda', link: google('https://www.agoda.com/partners/partnersearch.aspx?hid=777'), ...rate(190, 950) }] };
+  };
+  const [out] = await pickBookable([hotel], madrid, { show: 5, fetchJson });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].property_token, 'TOK1', 'asked for by token');
+  assert.equal(out.priceType, 'live', 'the token is the identity: no name or position check');
+  assert.deepEqual(out.bestPrice, { platform: 'agoda', price: 190, total: 950 });
+  assert.match(out.affiliateLinks.agoda, /hid=777.*cid=1966785/);
+  delete process.env.SERPAPI_KEY;
+});
+
+// ── Tracked clicks ────────────────────────────────────────────
+test('booking buttons go through /go and come out stamped with a click id', () => {
+  const api = 'https://api.example';
+  const hotel = { name: 'Hotel Uno', currency: 'EUR', platforms: { agoda: { price: 190 } },
+    affiliateLinks: {
+      agoda: 'https://www.agoda.com/partners/partnersearch.aspx?pcs=1&hid=777&cid=1966785',
+      bookingCom: 'https://www.anrdoezrs.net/click-101769223-11891539?url=' + encodeURIComponent('https://www.booking.com/hotel/es/uno.html?checkin=2027-07-15'),
+      expedia: 'https://www.expedia.com/Hotel-Search?selected=42&affcid=X',
+      tripAdvisor: 'https://www.tripadvisor.com/Search?q=Hotel+Uno',
+    } };
+  const t = trackHotelLinks(hotel, { baseUrl: api, searchId: 'ab12cd34', channel: 'wa' });
+  assert.ok(t.affiliateLinks.agoda.startsWith('https://api.example/go?'));
+  assert.equal(t.affiliateLinks.tripAdvisor, hotel.affiliateLinks.tripAdvisor, 'untracked platforms are left alone');
+  assert.equal(destinationOf(t.affiliateLinks.agoda), hotel.affiliateLinks.agoda);
+
+  const click = (link) => resolveClick(Object.fromEntries(new URL(link).searchParams));
+  const a = click(t.affiliateLinks.agoda);
+  const au = new URL(a.url);
+  assert.equal(au.searchParams.get('cid'), '1966785');
+  assert.match(au.searchParams.get('tag'), /^wa-ab12cd34-[0-9a-f]{8}$/, 'Agoda sub-id');
+  assert.equal(a.click.platform, 'agoda');
+  assert.equal(a.click.hotel, 'Hotel Uno');
+  assert.equal(a.click.price, 190);
+  assert.equal(a.click.channel, 'wa');
+  assert.equal(a.click.clickId, au.searchParams.get('tag'));
+
+  const b = new URL(click(t.affiliateLinks.bookingCom).url);
+  assert.equal(b.hostname, 'www.anrdoezrs.net');
+  assert.match(b.searchParams.get('sid'), /^wa-ab12cd34-/, 'CJ sub-id on the CJ link');
+  assert.equal(new URL(b.searchParams.get('url')).pathname, '/hotel/es/uno.html', 'destination untouched');
+
+  const e = click(t.affiliateLinks.expedia);
+  assert.equal(e.click.subIdParam, null);
+  assert.equal(new URL(e.url).searchParams.get('affcid'), 'X');
+});
+
+test('/go never redirects anywhere but a booking site', () => {
+  assert.equal(resolveClick({ to: 'https://evil.example/x' }), null);
+  assert.equal(resolveClick({ to: 'http://www.agoda.com/x' }), null, 'https only');
+  assert.equal(resolveClick({ to: 'https://agoda.com.evil.example/x' }), null);
+  assert.equal(resolveClick({ to: 'javascript:alert(1)' }), null);
+  assert.equal(resolveClick({}), null);
+  assert.ok(isAllowedDestination('https://www.hotels.com/Hotel-Search?selected=1'));
+  assert.equal(trackedLink('https://api.example', 'https://evil.example/x', {}), 'https://evil.example/x', 'not wrapped');
+  const r = resolveClick({ to: 'https://www.agoda.com/x', c: '<script>', s: '../..', h: '<b>Hotel</b>' });
+  assert.match(r.click.clickId, /^script-direct-[0-9a-f]{8}$/);
+  assert.equal(r.click.hotel, 'bHotelb');
+});

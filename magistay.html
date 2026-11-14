@@ -1502,6 +1502,8 @@ function buildHotelCard(h,idx){
     if(pa&&pb) return pa-pb;
     return pa?-1:pb?1:0;
   });
+  // With live prices, show only the sites that can sell this hotel on these dates.
+  if(hasLive) keys=keys.filter(function(k){return plats[k]&&plats[k].price;});
   var buttons=keys.map(function(key,i){
     var link=links[key]||buildFallbackLink(key,h);
     var p=plats[key]||{};
