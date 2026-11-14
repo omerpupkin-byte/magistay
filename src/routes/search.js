@@ -8,7 +8,7 @@
 
 import { Router }            from 'express';
 import { searchHotels }      from '../services/hotelSearch.js';
-import { matchHotelsWithAI } from '../services/aiMatcher.js';
+import { matchHotelsWithAI, lastAIFailure } from '../services/aiMatcher.js';
 import { summariseReviews }  from '../services/reviewSummariser.js';
 import { validateQuiz }      from '../utils/validateQuiz.js';
 import { hasClaude }         from '../services/claude.js';
@@ -22,7 +22,7 @@ const CACHE_TTL = 30 * 60 * 1000;
 const CACHE_MAX = 200;
 
 const SHOW    = 5;   // hotels on the results page
-const RESERVE = 3;   // extra ranked hotels, used when one cannot be booked
+const RESERVE = 10;  // extra ranked hotels, used when one cannot be booked
 
 // Everything that changes which hotels (or which prices) come back.
 function tripKey(quiz) {
@@ -84,7 +84,11 @@ async function runSearch(input, report = null) {
   // 4. Review summaries, where real review text exists.
   const hotels = (await summariseReviews(priced)).map(publicHotel);
 
-  return { status: 200, body: { hotels, meta: { ...meta(quiz, found, cached, hotels.length), livePrices: hotels.filter(h => h.priceType === 'live').length } } };
+  const m = meta(quiz, found, cached, hotels.length);
+  // What actually ranked these hotels, not what is configured.
+  if (!found.preMatched) m.matching = hotels.some(h => h.matchedBy === 'ai') ? 'ai' : 'rules';
+  m.livePrices = hotels.filter(h => h.priceType === 'live').length;
+  return { status: 200, body: { hotels, meta: m } };
 }
 
 // ── POST /api/search ──────────────────────────────────────────
@@ -129,6 +133,7 @@ router.get('/search/check', async (req, res, next) => {
           : null])),
         links: { bookingCom: h.affiliateLinks?.bookingCom, agoda: h.affiliateLinks?.agoda, expedia: h.affiliateLinks?.expedia, hotelsCom: h.affiliateLinks?.hotelsCom },
       })),
+      aiMatcher: body.meta.matching === 'ai' ? 'ok' : { fellBackToRules: true, lastFailure: lastAIFailure() },
       livePriceLookups: report,
     });
   } catch (err) {

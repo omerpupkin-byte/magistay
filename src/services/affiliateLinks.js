@@ -165,6 +165,12 @@ export function buildDirectLink(platform, sellerLink, quiz = {}, currency = '') 
   return null;
 }
 
+// Where a seller link leads, without its query: for diagnostics only.
+export function describeSellerLink(link) {
+  const dest = sellerDestination(link);
+  return dest ? dest.hostname + dest.pathname : 'no destination in link';
+}
+
 // The seller's page is the `pcurl` parameter of Google's click link.
 function sellerDestination(link) {
   try {

@@ -16,31 +16,44 @@ const MAX_RESULTS    = 5;
 const MAX_CANDIDATES = 20;   // sent to the AI; keeps the call fast
 
 // ── Main entry ────────────────────────────────────────────────
-// `limit` is how many ranked hotels to return. The search asks for a few
-// more than it shows, so a hotel that turns out not to be bookable can be
-// replaced by the next best match.
+// `limit` is how many ranked hotels to return. The search asks for more
+// than it shows, so a hotel that turns out not to be bookable can be
+// replaced by the next best match. Claude ranks at most MAX_AI_RANKED
+// (a longer answer is slow); the rest of the list follows the rule ranking.
+const MAX_AI_RANKED = 8;
+
+// Why the last AI call fell back to rules, for the check endpoint.
+let lastFailure = null;
+export function lastAIFailure() { return lastFailure; }
+
 export async function matchHotelsWithAI(quiz, hotels, { limit = MAX_RESULTS } = {}) {
   if (hotels.length === 0) return [];
-  limit = Math.max(1, Math.min(limit, 10));
+  limit = Math.max(1, Math.min(limit, 20));
 
   // Deterministic baseline: used to shortlist, and as the fallback result.
   const baseline = hotels.map(h => baselineScore(quiz, h)).sort((a, b) => b.matchScore - a.matchScore);
+  const byRules  = (list) => list.map(h => ({ ...h, matchedBy: 'rules' }));
 
   if (!hasClaude()) {
     console.log('[AI MATCHER] No API key — using rule-based scoring');
-    return baseline.slice(0, limit).map(h => ({ ...h, matchedBy: 'rules' }));
+    return byRules(baseline.slice(0, limit));
   }
 
   const shortlist = baseline.slice(0, MAX_CANDIDATES);
+  const aiCount   = Math.min(limit, MAX_AI_RANKED);
   try {
     console.log(`[AI MATCHER] Calling Claude with ${shortlist.length} candidates...`);
-    const parsed = await askClaudeJSON(buildMatchPrompt(quiz, shortlist, limit), { maxTokens: 600 * limit });
-    const ranked = applyAIResult(quiz, shortlist, parsed.matches || []);
-    if (ranked.length > 0) return ranked.slice(0, limit);
-    throw new Error('AI returned no usable matches');
+    const parsed = await askClaudeJSON(buildMatchPrompt(quiz, shortlist, aiCount), { maxTokens: 600 * aiCount });
+    const ranked = applyAIResult(quiz, shortlist, parsed.matches || []).slice(0, aiCount);
+    if (ranked.length === 0) throw new Error('AI returned no usable matches');
+    lastFailure = null;
+    // Reserve beyond the AI's picks: next best by rules, not already chosen.
+    const chosen = new Set(ranked.map(h => h.id));
+    return ranked.concat(byRules(baseline.filter(h => !chosen.has(h.id)))).slice(0, limit);
   } catch (e) {
+    lastFailure = { at: new Date().toISOString(), message: String(e?.message || e).slice(0, 300), status: e?.status ?? null, type: e?.name || null };
     console.error('[AI MATCHER] Falling back to rule-based scoring:', e.message);
-    return baseline.slice(0, limit).map(h => ({ ...h, matchedBy: 'rules' }));
+    return byRules(baseline.slice(0, limit));
   }
 }
 

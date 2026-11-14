@@ -18,7 +18,7 @@
 // Cost: 1 SerpApi search per hotel shown, 2 when the name is ambiguous.
 // Results are cached for 20 minutes per hotel + trip.
 
-import { buildDirectLink } from './affiliateLinks.js';
+import { buildDirectLink, buildAllAffiliateLinks, describeSellerLink } from './affiliateLinks.js';
 
 const ENDPOINT   = 'https://serpapi.com/search.json';
 const TIMEOUT_MS = 12_000;
@@ -54,7 +54,8 @@ export async function addLivePrices(hotels, quiz, { fetchJson = serpApiFetch, re
         hotel: hotel.name,
         result: !live?.matched ? 'not found on Google Hotels' : live.offers.some(o => o.platform) ? 'priced' : 'no price on our platforms',
         googleName: live?.googleName || null,
-        sellers: (live?.offers || []).map(o => ({ seller: o.seller, perNight: o.price, total: o.total, ours: !!o.platform })),
+        sellers: (live?.offers || []).map(o => ({ seller: o.seller, perNight: o.price, total: o.total, ours: !!o.platform,
+          ...(o.platform ? { leadsTo: o.link ? describeSellerLink(o.link) : 'no link' } : {}) })),
       });
       return live ? applyLivePrices(hotel, live, quiz) : hotel;
     } catch (e) {
@@ -76,20 +77,25 @@ export async function addLivePrices(hotels, quiz, { fetchJson = serpApiFetch, re
 // `show`. A hotel Google knows but none of our platforms sells on these
 // dates cannot be booked through us, so the next best match takes its
 // place. Hotels we could not check at all stay: unknown is not "sold out".
-export async function pickBookable(ranked, quiz, { show = 5, fetchJson = serpApiFetch, report = null } = {}) {
+export async function pickBookable(ranked, quiz, { show = 5, maxLookups = 15, fetchJson = serpApiFetch, report = null } = {}) {
   if (!livePricesEnabled()) return ranked.slice(0, show);
 
   const unbookable = h => !!h.livePrices && h.livePrices.found === 0;
   const first = await addLivePrices(ranked.slice(0, show), quiz, { fetchJson, report });
   let keep = first.filter(h => !unbookable(h));
 
-  const missing = show - keep.length;
-  const reserve = ranked.slice(show);
-  if (missing > 0 && reserve.length > 0) {
-    const extra = await addLivePrices(reserve, quiz, { fetchJson, report });
-    keep = keep.concat(extra.filter(h => !unbookable(h)).slice(0, missing));
-    console.log(`[LIVE PRICES] ${missing} hotel(s) not bookable on our platforms, replaced ${keep.length - (show - missing)} from the reserve`);
+  // Work down the reserve, a few at a time, until the page is full.
+  let next = show, dropped = show - keep.length;
+  while (keep.length < show && next < ranked.length && next < maxLookups) {
+    const size  = Math.min(show - keep.length + 1, maxLookups - next);
+    const batch = await addLivePrices(ranked.slice(next, next + size), quiz, { fetchJson, report });
+    next += size;
+    for (const h of batch) {
+      if (unbookable(h)) dropped++;
+      else if (keep.length < show) keep.push(h);
+    }
   }
+  if (dropped > 0) console.log(`[LIVE PRICES] ${dropped} hotel(s) not bookable on our platforms; showing ${keep.length} after checking ${Math.min(next, ranked.length)}`);
 
   // Nothing bookable anywhere: better the best matches, labelled, than an empty page.
   return keep.length > 0 ? keep : first;
@@ -272,7 +278,12 @@ export function applyLivePrices(hotel, live, quiz = {}) {
   if (!live.matched) return hotel;
 
   const platforms = { ...(hotel.platforms || {}) };
-  const affiliateLinks = { ...(hotel.affiliateLinks || {}) };
+  // Search links use the name Google (and the booking sites) know the hotel
+  // by: supplier names carry extras ("... anteriormente Icon Embassy") that
+  // make a platform's search come back empty.
+  const affiliateLinks = live.googleName && hotel.affiliateLinks
+    ? buildAllAffiliateLinks({ ...hotel, name: live.googleName }, quiz)
+    : { ...(hotel.affiliateLinks || {}) };
   const tracked = [];
   for (const offer of live.offers) {
     if (!offer.platform || platforms[offer.platform]?.live) continue;   // keep the cheapest per platform

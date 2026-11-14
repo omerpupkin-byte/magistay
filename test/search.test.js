@@ -302,7 +302,10 @@ test('live prices replace the indicative price and keep our links', async () => 
   assert.equal(h.platforms.hotelbeds.price, 380, 'supplier rate kept');
   assert.deepEqual(h.livePrices.cheaperElsewhere, { seller: 'Super.com', price: 390, official: false });
   assert.equal(h.breakfastPrice, null);
-  assert.equal(h.affiliateLinks.agoda, withLinks.affiliateLinks.agoda, 'no hotel page known: the search link stays');
+  const agodaLink = new URL(h.affiliateLinks.agoda);
+  assert.equal(agodaLink.pathname, '/search', 'no hotel page known: still a search link');
+  assert.equal(agodaLink.searchParams.get('cid'), '1966785', 'with our id');
+  assert.equal(agodaLink.searchParams.get('textToSearch'), 'Hotel Arts Barcelona, a Ritz-Carlton Hotel', "under Google's name for the hotel");
   assert.equal(h.platforms.agoda.direct, false);
 
   assert.equal(calls.length, 1);
@@ -440,6 +443,43 @@ test('the matcher returns as many ranked hotels as asked', async () => {
   const saved = process.env.ANTHROPIC_API_KEY; delete process.env.ANTHROPIC_API_KEY;
   assert.equal((await matchHotelsWithAI(quiz, many)).length, 5);
   assert.equal((await matchHotelsWithAI(quiz, many, { limit: 8 })).length, 8);
+  assert.equal((await matchHotelsWithAI(quiz, many, { limit: 15 })).length, 12, 'never more than there are');
   assert.match(buildMatchPrompt(quiz, many, 8), /Pick the 8 hotels/);
   if (saved) process.env.ANTHROPIC_API_KEY = saved;
+});
+
+test('search links use the name the booking sites know; long reserve is worked through in batches', async () => {
+  process.env.SERPAPI_KEY = 'test';
+  _clearLivePriceCache();
+  const supplier = { ...arts, id: 'hotelbeds-77', name: 'Embassy by Petit Palace anteriormente Icon Embassy', city: 'Madrid' };
+  supplier.affiliateLinks = buildAllAffiliateLinks(supplier, quiz);
+  const g = { type: 'hotel', name: 'Embassy by Petit Palace', gps_coordinates: googleArts.gps_coordinates,
+              prices: [{ source: 'Booking.com', link: 'https://www.google.com/aclk?sa=l', ...rate(380, 1139) }] };
+  const report = [];
+  const [h] = await addLivePrices([supplier], quiz, { fetchJson: async () => g, report });
+  const landing = new URL(new URL(h.affiliateLinks.bookingCom).searchParams.get('url'));
+  assert.equal(landing.searchParams.get('ss'), 'Embassy by Petit Palace, Madrid');
+  assert.equal(new URL(h.affiliateLinks.hotelsCom).searchParams.get('destination'), 'Embassy by Petit Palace, Madrid');
+  assert.equal(report[0].result, 'priced');
+  assert.equal(report[0].sellers[0].leadsTo, 'no destination in link');
+
+  // 12 ranked, only #1, #9, #10, #11, #12 bookable: all five are found.
+  _clearLivePriceCache();
+  const mk = (n, name) => ({ ...arts, id: 'hb-' + n, name });
+  const ranked = Array.from({ length: 12 }, (_, i) => mk(i, (i === 0 || i >= 8 ? 'Open ' : 'Soldout ') + 'Hotel' + String.fromCharCode(65 + i)));
+  let calls = 0;
+  const fetchJson = async (params) => {
+    calls++;
+    const name = params.q.replace(', Barcelona', '');
+    return { type: 'hotel', name, gps_coordinates: googleArts.gps_coordinates, prices: name.startsWith('Soldout') ? [] : [{ source: 'Agoda', ...rate(100, 500) }] };
+  };
+  const out = await pickBookable(ranked, quiz, { show: 5, fetchJson });
+  assert.deepEqual(out.map(x => x.id), ['hb-0', 'hb-8', 'hb-9', 'hb-10', 'hb-11']);
+  assert.ok(calls <= 12);
+
+  // The lookup budget is respected.
+  _clearLivePriceCache(); calls = 0;
+  await pickBookable(ranked, quiz, { show: 5, maxLookups: 7, fetchJson });
+  assert.equal(calls, 7);
+  delete process.env.SERPAPI_KEY;
 });
