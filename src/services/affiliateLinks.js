@@ -168,7 +168,10 @@ export function buildDirectLink(platform, sellerLink, quiz = {}, currency = '') 
 // Where a seller link leads, without its query: for diagnostics only.
 export function describeSellerLink(link) {
   const dest = sellerDestination(link);
-  return dest ? dest.hostname + dest.pathname : 'no destination in link';
+  if (!dest) return 'no destination in link';
+  // Parameter names only (never their values): enough to see how the site identifies the hotel.
+  const names = [...new Set([...dest.searchParams.keys()])].slice(0, 25).join(',');
+  return dest.hostname + dest.pathname + (names ? ` [${names}]` : '');
 }
 
 // The seller's page is the `pcurl` parameter of Google's click link.
@@ -180,28 +183,56 @@ function sellerDestination(link) {
   } catch { return null; }
 }
 
+// expedia.com, www.expedia.ca, expedia.co.uk, ca.hotels.com ... but not expedia.evil.com
+function onBrandSite(url, brand) {
+  if (url.protocol !== 'https:') return false;
+  const tld = '(com|ca|de|es|fr|it|nl|ie|at|ch|se|no|dk|fi|be|mx|jp|co\\.[a-z]{2}|com\\.[a-z]{2})';
+  return new RegExp(`^([a-z]{2,3}\\.|www\\.)?${brand}\\.${tld}$`, 'i').test(url.hostname);
+}
+
 function onSite(url, domain) {
   return url.protocol === 'https:' && (url.hostname === domain || url.hostname.endsWith('.' + domain));
 }
 
 function directBooking(dest, trip, currency) {
-  // https://www.booking.com/hotel/es/some-hotel.html  (optionally .en-gb.html)
   if (!onSite(dest, 'booking.com')) return null;
-  const m = dest.pathname.match(/^\/hotel\/([a-z]{2})\/([a-z0-9-]+)(?:\.[a-z-]+)?\.html$/i);
-  if (!m) return null;
   const { bookingCjLink, bookingAid } = ids();
-  const params = new URLSearchParams({
-    checkin: trip.checkIn, checkout: trip.checkOut,
-    group_adults: String(trip.adults), no_rooms: String(trip.rooms),
-    group_children: String(trip.ages.length),
-  });
+  const params = new URLSearchParams();
+  let path;
+
+  // a) The hotel's own page: /hotel/es/some-hotel.html (optionally .en-gb.html)
+  const page = dest.pathname.match(/^\/hotel\/([a-z]{2})\/([a-z0-9-]+)(?:\.[a-z-]+)?\.html$/i);
+  if (page) {
+    path = `/hotel/${page[1].toLowerCase()}/${page[2]}.html`;
+  } else if (/^\/searchresults(?:\.[a-z-]+)?\.html$/i.test(dest.pathname)) {
+    // b) Search results with this one hotel pinned on top. That is how
+    //    Google sends people to Booking.com; keep only what identifies
+    //    the hotel, none of the tracking.
+    const q = dest.searchParams;
+    const hotelId = [q.get('highlighted_hotels'), q.get('hotel_id'), q.get('hotelid')].find(v => /^\d{2,12}$/.test(v || ''));
+    const isHotelDest = q.get('dest_type') === 'hotel' && /^-?\d{1,12}$/.test(q.get('dest_id') || '');
+    if (!hotelId && !isHotelDest) return null;
+    path = '/searchresults.html';
+    if (hotelId) params.set('highlighted_hotels', hotelId);
+    if (/^-?\d{1,12}$/.test(q.get('dest_id') || '') && /^[a-z]{3,10}$/.test(q.get('dest_type') || '')) {
+      params.set('dest_id', q.get('dest_id')); params.set('dest_type', q.get('dest_type'));
+    } else if (hotelId) {
+      params.set('dest_id', hotelId); params.set('dest_type', 'hotel');
+    }
+  } else {
+    return null;
+  }
+
+  params.set('checkin', trip.checkIn); params.set('checkout', trip.checkOut);
+  params.set('group_adults', String(trip.adults)); params.set('no_rooms', String(trip.rooms));
+  params.set('group_children', String(trip.ages.length));
   for (const age of trip.ages) params.append('age', String(age));
   if (currency) params.set('selected_currency', currency);
   if (bookingAid) params.set('aid', bookingAid);
-  const page = `https://www.booking.com/hotel/${m[1].toLowerCase()}/${m[2]}.html?${params}`;
-  if (bookingAid || !bookingCjLink) return page;
+  const target = `https://www.booking.com${path}?${params}`;
+  if (bookingAid || !bookingCjLink) return target;
   const sep = bookingCjLink.includes('?') ? '&' : '?';
-  return `${bookingCjLink}${sep}url=${encodeURIComponent(page)}`;
+  return `${bookingCjLink}${sep}url=${encodeURIComponent(target)}`;
 }
 
 function directAgoda(dest, trip, currency) {
@@ -228,7 +259,9 @@ function directAgoda(dest, trip, currency) {
 }
 
 function directExpediaGroup(dest, trip, domain) {
-  if (!onSite(dest, domain)) return null;
+  // Google may hand out a regional site (expedia.ca, ca.hotels.com); hotel
+  // ids are the same everywhere, so the link is rebuilt on the .com site.
+  if (!onBrandSite(dest, domain.split('.')[0])) return null;
   const { expediaAffcid, expediaAfflid } = ids();
   const selected = dest.searchParams.get('selected');
   let url;

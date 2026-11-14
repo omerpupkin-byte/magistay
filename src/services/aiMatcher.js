@@ -31,7 +31,7 @@ export async function matchHotelsWithAI(quiz, hotels, { limit = MAX_RESULTS } = 
   limit = Math.max(1, Math.min(limit, 20));
 
   // Deterministic baseline: used to shortlist, and as the fallback result.
-  const baseline = hotels.map(h => baselineScore(quiz, h)).sort((a, b) => b.matchScore - a.matchScore);
+  const baseline = rankByRules(quiz, hotels);
   const byRules  = (list) => list.map(h => ({ ...h, matchedBy: 'rules' }));
 
   if (!hasClaude()) {
@@ -55,6 +55,32 @@ export async function matchHotelsWithAI(quiz, hotels, { limit = MAX_RESULTS } = 
     console.error('[AI MATCHER] Falling back to rule-based scoring:', e.message);
     return byRules(baseline.slice(0, limit));
   }
+}
+
+// Rule ranking of a whole pool. On top of each hotel's own score:
+//   - with no stated budget, a hotel priced far above the pool's middle
+//     is a worse default pick (nobody asked for the Ritz);
+//   - equal scores are ordered by how well and how widely the hotel is
+//     rated, then by price.
+export function rankByRules(quiz, hotels) {
+  const prices = hotels.map(h => h.bestPrice?.price).filter(p => p > 0).sort((a, b) => a - b);
+  const median = prices.length ? prices[Math.floor(prices.length / 2)] : null;
+  const noBudget = !quiz.budget || quiz.budget === 'any';
+
+  const scored = hotels.map(h => {
+    const s = baselineScore(quiz, h);
+    const price = h.bestPrice?.price;
+    if (noBudget && median && price) {
+      if (price > median * 3)        s.matchScore -= 14;
+      else if (price > median * 2)   s.matchScore -= 8;
+      else if (price > median * 1.4) s.matchScore -= 3;
+      else if (price <= median)      s.matchScore += 2;
+      s.matchScore = Math.min(97, Math.max(20, s.matchScore));
+    }
+    return s;
+  });
+  const standing = h => (h.riScore || 0) * Math.log10(10 + (h.totalReviews || 0));
+  return scored.sort((a, b) => (b.matchScore - a.matchScore) || (standing(b) - standing(a)) || ((a.bestPrice?.price ?? 1e9) - (b.bestPrice?.price ?? 1e9)));
 }
 
 // ── Prompt ────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 import { buildAllAffiliateLinks, buildDirectLink } from '../src/services/affiliateLinks.js';
 import { buildOccupancies, buildSearchBody, searchRadiusKm, analyseRates, normaliseHotel, parseContent, amenitiesFromFacilities, searchHotelbeds } from '../src/services/hotelbedsAPI.js';
-import { baselineScore, buildMatchPrompt, matchHotelsWithAI } from '../src/services/aiMatcher.js';
+import { baselineScore, buildMatchPrompt, matchHotelsWithAI, rankByRules } from '../src/services/aiMatcher.js';
 import { listNeeds, checkNeed } from '../src/services/travellerProfile.js';
 import { validateQuiz } from '../src/utils/validateQuiz.js';
 
@@ -619,4 +619,38 @@ test('/go never redirects anywhere but a booking site', () => {
   const r = resolveClick({ to: 'https://www.agoda.com/x', c: '<script>', s: '../..', h: '<b>Hotel</b>' });
   assert.match(r.click.clickId, /^script-direct-[0-9a-f]{8}$/);
   assert.equal(r.click.hotel, 'bHotelb');
+});
+
+test('direct links: Booking search results with the hotel pinned; regional Expedia sites', () => {
+  const b = new URL(buildDirectLink('bookingCom', google('https://www.booking.com/searchresults.en.html?aid=304142&label=gha-x&dest_id=-390625&dest_type=city&highlighted_hotels=91234&checkin=2020-01-01&utm_source=metagha'), quiz, 'EUR'));
+  const page = new URL(b.searchParams.get('url'));
+  assert.equal(page.pathname, '/searchresults.html');
+  assert.equal(page.searchParams.get('highlighted_hotels'), '91234');
+  assert.equal(page.searchParams.get('dest_id'), '-390625');
+  assert.equal(page.searchParams.get('checkin'), '2027-07-15');
+  assert.equal(page.searchParams.get('aid'), null);
+  assert.equal(page.searchParams.get('label'), null);
+  assert.equal(page.searchParams.get('utm_source'), null);
+
+  const byDest = new URL(new URL(buildDirectLink('bookingCom', google('https://www.booking.com/searchresults.en.html?dest_id=91234&dest_type=hotel'), quiz)).searchParams.get('url'));
+  assert.equal(byDest.searchParams.get('dest_type'), 'hotel');
+  assert.equal(buildDirectLink('bookingCom', google('https://www.booking.com/searchresults.en.html?ss=Madrid&dest_id=-390625&dest_type=city'), quiz), null, 'a city search is not this hotel');
+
+  const e = new URL(buildDirectLink('expedia', google('https://www.expedia.ca/Hotel-Search?selected=8556&mctc=10'), quiz));
+  assert.equal(e.origin + e.pathname, 'https://www.expedia.com/Hotel-Search');
+  assert.equal(e.searchParams.get('selected'), '8556');
+  const h = new URL(buildDirectLink('hotelsCom', google('https://ca.hotels.com/Hotel-Search?selected=26286'), quiz));
+  assert.equal(h.hostname, 'www.hotels.com');
+  assert.equal(buildDirectLink('expedia', google('https://expedia.evil.com/Hotel-Search?selected=8556'), quiz), null);
+  assert.equal(buildDirectLink('expedia', google('https://www.notexpedia.com/Hotel-Search?selected=8556'), quiz), null);
+});
+
+test('rule ranking: without a budget, the far-above-average hotel is not a default pick', () => {
+  const mk = (name, price, riScore = 9.4, totalReviews = 2000) => ({ id: name, name, bestPrice: { price }, riScore, totalReviews, riConfidence: 'high', stars: 5, distanceKm: 0.8, amenities: [], facilities: [] });
+  const pool = [mk('Ritz', 1460), mk('Fair', 250), mk('Mid', 380), mk('Cheap', 180, 8.0, 300), mk('Other', 260, 9.4, 200), mk('Pricey', 540)];
+  const any = rankByRules({ destination: 'Madrid' }, pool).map(h => h.name);
+  assert.equal(any[any.length - 1], 'Ritz');
+  assert.equal(any[0], 'Fair', 'same score as Other, but far more reviews');
+  const lux = rankByRules({ destination: 'Madrid', budget: '250plus' }, pool).map(h => h.name);
+  assert.ok(lux.indexOf('Ritz') < any.indexOf('Ritz'), 'with a stated luxury budget the Ritz is not pushed down');
 });
