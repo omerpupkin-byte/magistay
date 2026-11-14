@@ -8,14 +8,35 @@ import Anthropic from '@anthropic-ai/sdk';
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5';
 
 let client = null;
+// The key as it should be sent: a pasted key often arrives with a space,
+// a line break or quotes around it, and Anthropic then answers
+// "invalid x-api-key".
+function apiKey() {
+  return String(process.env.ANTHROPIC_API_KEY || '').trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+}
+
 function getClient() {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
-  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 45_000, maxRetries: 1 });
+  if (!apiKey()) return null;
+  if (!client) client = new Anthropic({ apiKey: apiKey(), timeout: 45_000, maxRetries: 1 });
   return client;
 }
 
 export function hasClaude() {
-  return !!process.env.ANTHROPIC_API_KEY;
+  return !!apiKey();
+}
+
+// What the stored key LOOKS like, never the key itself. For /health.
+export function claudeKeyShape() {
+  const raw = String(process.env.ANTHROPIC_API_KEY || '');
+  if (!raw) return { set: false };
+  const key = apiKey();
+  return {
+    set: true,
+    looksLikeAnthropicKey: /^sk-ant-/.test(key),
+    length: key.length,
+    hadSpacesOrLineBreaks: raw !== raw.trim() || /\s/.test(key),
+    hadQuotes: /^["'`]|["'`]$/.test(raw.trim()),
+  };
 }
 
 // Sends one prompt, returns the parsed JSON object from the reply.
