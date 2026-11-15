@@ -1383,7 +1383,7 @@ function renderProblem(quiz, err){
 }
 
 // ─── BUILD SINGLE HOTEL CARD ────────────────────────────────────
-var PLATFORM_NAMES={bookingCom:'Booking.com',agoda:'Agoda',expedia:'Expedia',hotelsCom:'Hotels.com'};
+var PLATFORM_NAMES={bookingCom:'Booking.com',agoda:'Agoda',expedia:'Expedia',hotelsCom:'Hotels.com',tripCom:'Trip.com'};
 var CURRENCY_SYMBOL={USD:'$',EUR:'€',GBP:'£',ILS:'₪'};
 
 function money(amount, currency){
@@ -1519,10 +1519,12 @@ function buildHotelCard(h,idx){
     if(pa&&pb) return pa-pb;
     return pa?-1:pb?1:0;
   });
+  // A button only where the server gave a link: those are the sites that credit the booking to us.
+  keys=keys.filter(function(k){return !!links[k];});
   // With live prices, show only the sites that can sell this hotel on these dates.
   if(hasLive) keys=keys.filter(function(k){return plats[k]&&plats[k].price;});
   var buttons=keys.map(function(key,i){
-    var link=links[key]||buildFallbackLink(key,h);
+    var link=links[key];
     var p=plats[key]||{};
     var known=!!p.price;
     var isLow=hasLive&&known&&i===0;
@@ -1551,6 +1553,12 @@ function buildHotelCard(h,idx){
           '<p style="font-size:12px;font-weight:600;color:var(--coral);">Check &amp; book →</p></div>'+
       '</div></a>';
   }).join('');
+  // Prices on sites we cannot send you to: shown as information, without a link.
+  var others=(live&&live.otherPrices)||[];
+  if(others.length){
+    buttons+='<p class="ppr-terms" style="margin:2px 2px 0;">Other sites: '+others.map(function(o){
+      return esc(o.seller)+' '+money(o.price,cur);}).join(' · ')+' /night.</p>';
+  }
   // Honest about the rest of the market: if another seller is cheaper, say so.
   var else_=live&&live.cheaperElsewhere;
   if(else_){

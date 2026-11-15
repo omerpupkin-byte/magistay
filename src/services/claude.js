@@ -4,6 +4,7 @@
 // back to deterministic logic.
 
 import Anthropic from '@anthropic-ai/sdk';
+import { count } from './usage.js';
 
 // The matcher runs while a traveller waits, so the default is the fastest
 // model. ANTHROPIC_MODEL overrides it (e.g. a larger model for quality tests).
@@ -53,6 +54,10 @@ export async function askClaudeJSON(prompt, { maxTokens = 2048 } = {}) {
     max_tokens: maxTokens,
     messages:   [{ role: 'user', content: prompt }],
   });
+
+  count('claudeCalls');
+  count('claudeInputTokens',  message.usage?.input_tokens  || 0);
+  count('claudeOutputTokens', message.usage?.output_tokens || 0);
 
   const raw = (message.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
   return JSON.parse(extractJSON(raw));

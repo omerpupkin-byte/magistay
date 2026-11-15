@@ -15,13 +15,17 @@ import { validateQuiz }      from '../utils/validateQuiz.js';
 import { hasClaude }         from '../services/claude.js';
 import { pickBookable, livePricesEnabled } from '../services/livePrices.js';
 import { trackHotelLinks, destinationOf, newSearchId } from '../services/clickLinks.js';
+import { cacheGet, cacheSet } from '../services/store.js';
+import { count, usageSnapshot, usageDelta } from '../services/usage.js';
+import { ALL_PLATFORMS, platformStatus } from '../services/affiliateLinks.js';
 
 const router = Router();
 
 // ── Candidate cache ───────────────────────────────────────────
-const cache = new Map();
-const CACHE_TTL = 30 * 60 * 1000;
-const CACHE_MAX = 200;
+// The hotel list for a trip is the same for everyone and changes slowly;
+// what moves is price and availability, and those are re-read per hotel
+// (livePrices.js) before anything is shown. Kept in the shared store.
+const LIST_TTL = (Number(process.env.LIST_CACHE_HOURS) || 6) * 60 * 60 * 1000;
 
 const SHOW    = 5;   // hotels on the results page
 const RESERVE = 10;  // extra ranked hotels, used when one cannot be booked
@@ -32,19 +36,8 @@ function tripKey(quiz) {
     quiz.destination.toLowerCase(), quiz.checkIn, quiz.checkOut,
     quiz.adults, quiz.children, quiz.infants, quiz.rooms,
     quiz.childAges.join('.'), quiz.radiusKm, quiz.stars,
+    quiz.budget || '', (quiz.landmark || '').toLowerCase(),      // both shape the list that is fetched
   ].join('|');
-}
-
-function getCache(key) {
-  const entry = cache.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.ts > CACHE_TTL) { cache.delete(key); return null; }
-  return entry.data;
-}
-
-function setCache(key, data) {
-  cache.set(key, { data, ts: Date.now() });
-  if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
 }
 
 // ── The search itself ─────────────────────────────────────────
@@ -61,11 +54,13 @@ async function runSearch(input, report = null, ctx = {}) {
   // 1. Candidates. AI suggestions are tailored to the traveller, so
   //    only real supplier results are shared between travellers.
   const key = tripKey(quiz);
-  let found = getCache(key);
+  count('searches');
+  let found = await cacheGet('list|' + key);
   const cached = !!found;
+  if (cached) count('listingCacheHits');
   if (!found) {
     found = await searchHotels(quiz);
-    if (!found.preMatched && found.hotels.length > 0) setCache(key, found);
+    if (!found.preMatched && found.hotels.length > 0 && found.source !== 'mock') await cacheSet('list|' + key, found, LIST_TTL);
   }
 
   timings.candidatesMs = Date.now() - t0;
@@ -173,6 +168,7 @@ router.get('/search/result/:id/:step?', async (req, res, next) => {
 async function buildCheckReport(q, ctx) {
   const list = v => (typeof v === 'string' && v ? v.split(',').map(x => x.trim()).filter(Boolean) : []);
   const report = [];
+  const usageBefore = usageSnapshot();
   const { status, body } = await runSearch({
     destination: q.destination, checkIn: q.checkIn, checkOut: q.checkOut,
     adults: Number(q.adults) || 2, children: Number(q.children) || 0, infants: Number(q.infants) || 0,
@@ -183,9 +179,12 @@ async function buildCheckReport(q, ctx) {
   }, report, ctx);
   if (status !== 200) return { status, body };
 
-  const PLATFORMS = ['bookingCom', 'agoda', 'expedia', 'hotelsCom'];
+  const PLATFORMS = ALL_PLATFORMS;
   return { status: 200, body: {
     meta: body.meta,
+    // What this one search cost, and who each platform's clicks are credited to.
+    cost: usageDelta(usageBefore, usageSnapshot()),
+    affiliate: platformStatus(),
     aiMatcher: body.meta.matching === 'ai'
       ? { ok: true, model: claudeModel(), answeredInMs: lastAIDurationMs() }
       : { fellBackToRules: true, model: claudeModel(), lastFailure: lastAIFailure() },
@@ -194,6 +193,7 @@ async function buildCheckReport(q, ctx) {
       matchReason: h.matchReason, priceType: h.priceType, currency: h.currency,
       stars: h.stars, rating: h.riScore, reviews: h.totalReviews, distanceKm: h.distanceKm,
       needs: h.needsCheck, highlights: h.highlights,
+      otherPrices: h.livePrices?.otherPrices || [], cheaperElsewhere: h.livePrices?.cheaperElsewhere || null,
       bestPrice: h.bestPrice, listPrice: h.platforms?.google?.price ?? h.platforms?.hotelbeds?.price ?? null,
       platforms: Object.fromEntries(PLATFORMS.map(k => [k, h.platforms?.[k]
         ? { perNight: h.platforms[k].price, total: h.platforms[k].total, directLink: !!h.platforms[k].direct }

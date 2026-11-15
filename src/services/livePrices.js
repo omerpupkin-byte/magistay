@@ -18,11 +18,13 @@
 // Cost: 1 SerpApi search per hotel shown, 2 when the name is ambiguous.
 // Results are cached for 20 minutes per hotel + trip.
 
-import { buildDirectLink, buildAllAffiliateLinks, describeSellerLink } from './affiliateLinks.js';
+import { buildDirectLink, buildAllAffiliateLinks, describeSellerLink, bookablePlatforms } from './affiliateLinks.js';
+import { cacheGet, cacheSet, _clearStore } from './store.js';
+import { count } from './usage.js';
 
 const ENDPOINT   = process.env.SERPAPI_ENDPOINT || 'https://serpapi.com/search.json';   // overridable for local testing
 const TIMEOUT_MS = 12_000;
-const CACHE_TTL  = 20 * 60 * 1000;
+const CACHE_TTL  = (Number(process.env.PRICE_CACHE_MIN) || 45) * 60 * 1000;   // shared by all travellers asking for the same hotel and trip
 const CACHE_MAX  = 500;
 
 // Google's seller name → our platform key (same keys as affiliateLinks.js).
@@ -31,6 +33,7 @@ const PLATFORM_PATTERNS = [
   ['agoda',      /^agoda/i],
   ['expedia',    /^expedia/i],
   ['hotelsCom',  /^hotels\.com$/i],
+  ['tripCom',    /^trip\.com$/i],
 ];
 
 const cache = new Map();
@@ -107,12 +110,11 @@ async function lookup(hotel, quiz, fetchJson) {
   const key = [hotel.id, quiz.checkIn, quiz.checkOut, quiz.adults, quiz.children, quiz.infants,
                (quiz.childAges || []).join('.'), currency].join('|');
 
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.ts < CACHE_TTL) return hit.data;
+  const hit = await cacheGet('price|' + key);
+  if (hit) { count('priceCacheHits'); return hit; }
 
   const data = await fetchFromGoogle(hotel, quiz, currency, fetchJson);
-  cache.set(key, { data, ts: Date.now() });
-  if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+  await cacheSet('price|' + key, data, CACHE_TTL);
   return data;
 }
 
@@ -289,15 +291,23 @@ export function applyLivePrices(hotel, live, quiz = {}) {
   // Search links use the name Google (and the booking sites) know the hotel
   // by: supplier names carry extras ("... anteriormente Icon Embassy") that
   // make a platform's search come back empty.
-  const affiliateLinks = live.googleName && hotel.affiliateLinks
-    ? buildAllAffiliateLinks({ ...hotel, name: live.googleName }, quiz)
-    : { ...(hotel.affiliateLinks || {}) };
+  const affiliateLinks = buildAllAffiliateLinks({ ...hotel, name: live.googleName || hotel.name }, quiz);
   const tracked = [];
+  const ours = new Set(bookablePlatforms());
+  const reference = [];                 // sellers we know but cannot earn from: price only, no link
+  const seen = new Set();
   for (const offer of live.offers) {
-    if (!offer.platform || platforms[offer.platform]?.live) continue;   // keep the cheapest per platform
+    if (!offer.platform || seen.has(offer.platform)) continue;          // keep the cheapest per platform
+    seen.add(offer.platform);
     // Straight to the hotel's page on that platform, with our affiliate id.
-    const direct = offer.link ? buildDirectLink(offer.platform, offer.link, quiz, live.currency) : null;
+    const direct = ours.has(offer.platform) && offer.link ? buildDirectLink(offer.platform, offer.link, quiz, live.currency) : null;
     if (direct) affiliateLinks[offer.platform] = direct;
+    // No way to send the traveller there under our name: show the price, not a button.
+    if (!ours.has(offer.platform) || !affiliateLinks[offer.platform]) {
+      delete affiliateLinks[offer.platform];
+      reference.push({ seller: offer.seller, price: offer.price });
+      continue;
+    }
     platforms[offer.platform] = {
       price: offer.price, total: offer.total, live: true, direct: !!direct,
       taxesIncluded: offer.taxesIncluded,
@@ -314,6 +324,7 @@ export function applyLivePrices(hotel, live, quiz = {}) {
     // The cheapest price anywhere, when it is NOT one of our platforms -
     // shown so "lowest" on the page is never a half-truth.
     cheaperElsewhere: null,
+    otherPrices: reference.slice(0, 4),
   };
 
   if (tracked.length === 0) {
@@ -324,7 +335,8 @@ export function applyLivePrices(hotel, live, quiz = {}) {
 
   const cheapest = tracked[0];
   const overall  = live.offers[0];
-  if (overall && !overall.platform && overall.price < cheapest.price) {
+  const earnsForUs = overall && tracked.some(t => t.platform === overall.platform);
+  if (overall && !earnsForUs && overall.price < cheapest.price) {
     livePrices.cheaperElsewhere = { seller: overall.seller, price: overall.price, official: overall.official };
   }
 
@@ -348,6 +360,7 @@ export function applyLivePrices(hotel, live, quiz = {}) {
 
 // ── HTTP ──────────────────────────────────────────────────────
 export async function serpApiFetch(params) {
+  count('serpapiCalls');
   const url = `${ENDPOINT}?${new URLSearchParams({ ...params, api_key: process.env.SERPAPI_KEY })}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
   const body = await res.json().catch(() => null);
@@ -360,4 +373,4 @@ export async function serpApiFetch(params) {
 function isDate(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s); }
 
 // For tests.
-export function _clearLivePriceCache() { cache.clear(); }
+export function _clearLivePriceCache() { cache.clear(); _clearStore(); }

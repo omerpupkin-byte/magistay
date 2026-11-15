@@ -42,6 +42,17 @@ The response says which one was used in `meta.source`, and the page tells the tr
 - Cost: 1 SerpApi search per hotel shown (2 for an ambiguous name), cached 20 minutes.
 - The buttons still open OUR affiliate links (a search for the hotel on the platform), so the price on arrival can differ slightly.
 
+## Cost control
+
+`/health` shows `usage`: paid lookups, lookups the cache avoided, Claude tokens and an estimated cost per search. Each check report (`/api/search/check/<n>?...`) shows what that one search cost.
+
+- `src/services/store.js` keeps every paid answer (a trip's hotel list for 6 hours, a hotel's prices per site for 45 minutes) and shares it between travellers. With `DATABASE_URL` it survives restarts.
+- One Google Hotels page per new trip; a second only when the first has fewer than 12 usable hotels.
+
+## Who earns from a click
+
+`platformStatus()` in `affiliateLinks.js` decides, per platform: our own id, a Travelpayouts link (`TP_LINK_<PLATFORM>`), or nothing. Only platforms that credit us get a booking button; the others' prices are shown as plain text ("Other sites: ..."). `AFFILIATE_DISABLE` switches a platform off.
+
 ## Tracked clicks
 
 Every booking button points at `GET /go?to=<affiliate link>&p=<platform>&h=<hotel>&s=<search id>&c=<channel>` on this server. `/go` writes a `[CLICK]` log line, adds a click id where the affiliate network reads a sub-id (`tag` for Agoda, `sid` for CJ / Booking.com, `label` for a direct Booking.com aid) and redirects. The click id looks like `web-1a2b3c4d-9f8e7d6c` (channel, search, random), so a commission in a network report leads back to the search, hotel, platform and channel. `/go` only redirects to the booking sites and CJ; anything else gets a 400. Clicks are kept in the log and in memory (see `clicks` in `/health`); a database is the next step.

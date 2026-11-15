@@ -12,14 +12,17 @@
 // price per booking site, and affiliateLinks.js turns the site's hotel
 // page into OUR link.
 //
-// Cost: GOOGLE_HOTELS_PAGES searches per new trip (default 2, about 40
-// hotels), cached by the search route for 30 minutes.
+// Cost: 1 search per new trip (a 2nd only if the first page leaves fewer
+// than 12 usable hotels), kept by the search route for hours and shared.
 
 import { distanceKm } from './geocoding.js';
 import { amenitiesFromFacilities } from './hotelbedsAPI.js';
 import { serpApiFetch, tripQuery } from './livePrices.js';
 
+// One page (about 18 hotels) is enough for the matcher. A second page is
+// bought only when the first leaves too few usable hotels.
 const MAX_PAGES = () => Math.min(3, Math.max(1, Number(process.env.GOOGLE_HOTELS_PAGES) || 2));
+const ENOUGH    = 12;
 
 // Budget bands (per night). Used only to keep the candidate pool relevant;
 // the matcher still judges value hotel by hotel.
@@ -52,7 +55,7 @@ export async function searchGoogleHotels(quiz, { fetchJson = serpApiFetch } = {}
       hotels.push(normaliseProperty(p, quiz, currency));
     }
     pageToken = res?.serpapi_pagination?.next_page_token;
-    if (!pageToken) break;
+    if (!pageToken || hotels.length >= ENOUGH) break;
   }
 
   console.log(`[GOOGLE HOTELS] ${hotels.length} bookable hotels for "${params.q}"`);

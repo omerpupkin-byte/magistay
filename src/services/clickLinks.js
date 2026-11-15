@@ -13,10 +13,21 @@
 // It can only lead to the booking sites listed below, never elsewhere.
 
 import { randomBytes } from 'node:crypto';
-import { TRACKED_PLATFORMS } from './affiliateLinks.js';
+import { bookablePlatforms } from './affiliateLinks.js';
+import { saveClick } from './store.js';
 
 // Sites a /go link may lead to.
-const BOOKING_SITES = ['booking.com', 'agoda.com', 'expedia.com', 'hotels.com'];
+const BOOKING_SITES = ['booking.com', 'agoda.com', 'expedia.com', 'hotels.com', 'trip.com'];
+// Travelpayouts' redirect domain, plus the host of any Travelpayouts link configured.
+const TP_DOMAINS = ['tp.media', 'tp.st'];
+function tpDomains() {
+  const extra = [];
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith('TP_LINK_')) continue;
+    try { extra.push(new URL(v).hostname.replace(/^www\./, '')); } catch { /* ignore */ }
+  }
+  return [...TP_DOMAINS, ...extra];
+}
 // CJ Affiliate's tracking domains (Booking.com is tracked through CJ).
 const CJ_DOMAINS = ['anrdoezrs.net', 'dpbolvw.net', 'jdoqocy.com', 'kqzyfj.com', 'tkqlhce.com'];
 
@@ -32,7 +43,7 @@ export function isAllowedDestination(url) {
   try {
     const u = new URL(url);
     if (u.protocol !== 'https:') return false;
-    return [...BOOKING_SITES, ...cjDomains()].some(d => onDomain(u.hostname, d));
+    return [...BOOKING_SITES, ...cjDomains(), ...tpDomains()].some(d => onDomain(u.hostname, d));
   } catch { return false; }
 }
 
@@ -48,7 +59,7 @@ export function trackedLink(baseUrl, destination, { platform, hotel, searchId, c
 export function trackHotelLinks(hotel, { baseUrl, searchId, channel }) {
   if (!hotel.affiliateLinks || !baseUrl) return hotel;
   const affiliateLinks = { ...hotel.affiliateLinks };
-  for (const platform of TRACKED_PLATFORMS) {
+  for (const platform of bookablePlatforms()) {
     if (!affiliateLinks[platform]) continue;
     affiliateLinks[platform] = trackedLink(baseUrl, affiliateLinks[platform], {
       platform, hotel: hotel.name, searchId, channel,
@@ -97,7 +108,8 @@ function stamp(destination, clickId) {
   const host = u.hostname;
   let subId = null;
 
-  if (cjDomains().some(d => onDomain(host, d)))      subId = 'sid';     // CJ Affiliate: shopper id
+  if (tpDomains().some(d => onDomain(host, d)))      subId = 'sub_id';  // Travelpayouts: sub id
+  else if (cjDomains().some(d => onDomain(host, d))) subId = 'sid';     // CJ Affiliate: shopper id
   else if (onDomain(host, 'agoda.com'))              subId = 'tag';     // Agoda partners: tag
   else if (onDomain(host, 'booking.com') && u.searchParams.get('aid')) subId = 'label';   // Booking.com direct aid
   // Expedia Group links carry affcid/afflid only; no sub-id field is used.
@@ -112,6 +124,7 @@ export function rememberClick(click) {
   recent.push(click);
   if (recent.length > 500) recent.shift();
   console.log(`[CLICK] ${JSON.stringify(click)}`);
+  saveClick(click);                       // durable when a database is connected
 }
 export function clickStats() {
   const byPlatform = {};

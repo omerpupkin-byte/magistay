@@ -12,6 +12,8 @@
 //   BOOKING_AFFILIATE_ID  direct Booking.com aid (used instead of CJ if set)
 //   AGODA_AFFILIATE_ID    Agoda cid
 //   EXPEDIA_AFFCID / EXPEDIA_AFFLID   Expedia Group affiliate ids
+//   TP_LINK_<PLATFORM>    a Travelpayouts link for the platform (used instead of the ids above)
+//   AFFILIATE_DISABLE     platforms we are NOT approved for, e.g. "expedia,hotelsCom"
 
 const DEFAULTS = {
   bookingCjLink: 'https://www.anrdoezrs.net/click-101769223-11891539',
@@ -20,27 +22,94 @@ const DEFAULTS = {
   expediaAfflid: '1101lDpY8aoX',
 };
 
-function ids() {
+// ── Which platforms earn for us ───────────────────────────────
+// A booking button is shown only for a platform whose clicks are
+// credited to us. Three ways a platform can be "ours":
+//   - our own affiliate id for it (the variables above),
+//   - a Travelpayouts link for it (TP_LINK_<PLATFORM>): generate any
+//     link for that brand in Travelpayouts and paste it; the hotel's
+//     page is put into it as the destination,
+//   - neither, or listed in AFFILIATE_DISABLE: no button. Its price is
+//     still shown, as information, without a link.
+export const ALL_PLATFORMS = ['bookingCom', 'agoda', 'expedia', 'hotelsCom', 'tripCom'];
+
+const TP_ENV = { bookingCom: 'TP_LINK_BOOKINGCOM', agoda: 'TP_LINK_AGODA', expedia: 'TP_LINK_EXPEDIA',
+                 hotelsCom: 'TP_LINK_HOTELSCOM', tripCom: 'TP_LINK_TRIPCOM' };
+
+function tpLink(platform) {
+  try {
+    const u = new URL(String(process.env[TP_ENV[platform]] || '').trim());
+    return u.protocol === 'https:' ? u : null;
+  } catch { return null; }
+}
+
+function disabledPlatforms() {
+  return new Set(String(process.env.AFFILIATE_DISABLE || '').split(',').map(x => x.trim()).filter(Boolean));
+}
+
+// Our own ids for a platform. Empty when the platform goes through
+// Travelpayouts instead (two trackers on one click would fight).
+function ids(platform) {
+  const own = (p) => !tpLink(p);
+  const expGroup = platform === 'hotelsCom' ? own('hotelsCom') : own('expedia');
   return {
-    bookingCjLink: process.env.BOOKING_CJ_LINK      || DEFAULTS.bookingCjLink,
-    bookingAid:    process.env.BOOKING_AFFILIATE_ID || '',
-    agodaCid:      process.env.AGODA_AFFILIATE_ID   || DEFAULTS.agodaCid,
-    expediaAffcid: process.env.EXPEDIA_AFFCID || process.env.EXPEDIA_AFFILIATE_ID || DEFAULTS.expediaAffcid,
-    expediaAfflid: process.env.EXPEDIA_AFFLID       || DEFAULTS.expediaAfflid,
+    bookingCjLink: own('bookingCom') ? (process.env.BOOKING_CJ_LINK      || DEFAULTS.bookingCjLink) : '',
+    bookingAid:    own('bookingCom') ? (process.env.BOOKING_AFFILIATE_ID || '') : '',
+    agodaCid:      own('agoda')      ? (process.env.AGODA_AFFILIATE_ID   || DEFAULTS.agodaCid) : '',
+    expediaAffcid: expGroup ? (process.env.EXPEDIA_AFFCID || process.env.EXPEDIA_AFFILIATE_ID || DEFAULTS.expediaAffcid) : '',
+    expediaAfflid: expGroup ? (process.env.EXPEDIA_AFFLID || DEFAULTS.expediaAfflid) : '',
   };
 }
 
-// Platforms where a click is tracked to us (and can earn commission).
-export const TRACKED_PLATFORMS = ['bookingCom', 'agoda', 'expedia', 'hotelsCom'];
+// What each platform runs on right now. The ids are public (they are in
+// every link); listed so they can be compared with the affiliate accounts.
+export function platformStatus() {
+  const off = disabledPlatforms();
+  const out = {};
+  for (const p of ALL_PLATFORMS) {
+    if (off.has(p)) { out[p] = { bookable: false, via: 'disabled' }; continue; }
+    const tp = tpLink(p);
+    if (tp) { out[p] = { bookable: true, via: 'travelpayouts', id: tp.searchParams.get('marker') || tp.hostname }; continue; }
+    const i = ids(p);
+    if (p === 'bookingCom') {
+      out[p] = i.bookingAid ? { bookable: true, via: 'booking aid', id: i.bookingAid }
+        : i.bookingCjLink ? { bookable: true, via: 'cj', id: (i.bookingCjLink.match(/click-[\d-]+/) || [i.bookingCjLink])[0], builtInDefault: !process.env.BOOKING_CJ_LINK }
+        : { bookable: false, via: 'none' };
+    } else if (p === 'agoda') {
+      out[p] = i.agodaCid ? { bookable: true, via: 'agoda cid', id: i.agodaCid, builtInDefault: !process.env.AGODA_AFFILIATE_ID } : { bookable: false, via: 'none' };
+    } else if (p === 'expedia' || p === 'hotelsCom') {
+      out[p] = i.expediaAffcid ? { bookable: true, via: 'expedia affcid', id: i.expediaAfflid || i.expediaAffcid,
+        builtInDefault: !(process.env.EXPEDIA_AFFCID || process.env.EXPEDIA_AFFILIATE_ID) } : { bookable: false, via: 'none' };
+    } else {
+      out[p] = { bookable: false, via: 'none' };      // Travelpayouts only
+    }
+  }
+  return out;
+}
+
+export function isBookable(platform) { return !!platformStatus()[platform]?.bookable; }
+export function bookablePlatforms()  { const st = platformStatus(); return ALL_PLATFORMS.filter(p => st[p].bookable); }
+
+// Through Travelpayouts when that is how the platform is ours.
+function finalize(platform, url) {
+  const tp = url && tpLink(platform);
+  if (!tp) return url;
+  const out = new URL(tp);
+  out.searchParams.set('u', url);
+  return String(out);
+}
 
 // ── Public: all links for one hotel ───────────────────────────
 export function buildAllAffiliateLinks(hotel, quiz = {}) {
   const trip = tripParams(quiz);
+  const ours = new Set(bookablePlatforms());
+  const link = (platform, build) => (ours.has(platform) ? { [platform]: finalize(platform, build(hotel, trip)) } : {});
   return {
-    bookingCom:  buildBookingLink(hotel, trip),
-    agoda:       buildAgodaLink(hotel, trip),
-    expedia:     buildExpediaLink(hotel, trip),
-    hotelsCom:   buildHotelsComLink(hotel, trip),
+    ...link('bookingCom', buildBookingLink),
+    ...link('agoda',      buildAgodaLink),
+    ...link('expedia',    buildExpediaLink),
+    ...link('hotelsCom',  buildHotelsComLink),
+    // Trip.com has no search link here: it gets a button only with the hotel's own page.
     tripAdvisor: buildTripAdvisorLink(hotel),
     kayak:       buildKayakLink(hotel, trip),
   };
@@ -81,7 +150,7 @@ function searchText(hotel) {
 
 // ── Booking.com (via CJ deep link) ────────────────────────────
 function buildBookingLink(hotel, trip) {
-  const { bookingCjLink, bookingAid } = ids();
+  const { bookingCjLink, bookingAid } = ids('bookingCom');
   const params = new URLSearchParams({
     ss:           searchText(hotel),
     checkin:      trip.checkIn,
@@ -104,7 +173,7 @@ function buildBookingLink(hotel, trip) {
 
 // ── Agoda ─────────────────────────────────────────────────────
 function buildAgodaLink(hotel, trip) {
-  const { agodaCid } = ids();
+  const { agodaCid } = ids('agoda');
   const params = new URLSearchParams({
     textToSearch: searchText(hotel),
     checkIn:  trip.checkIn,
@@ -121,8 +190,8 @@ function buildAgodaLink(hotel, trip) {
 }
 
 // ── Expedia / Hotels.com (same Expedia Group affiliate ids) ───
-function expediaGroupParams(hotel, trip) {
-  const { expediaAffcid, expediaAfflid } = ids();
+function expediaGroupParams(hotel, trip, platform) {
+  const { expediaAffcid, expediaAfflid } = ids(platform);
   const params = new URLSearchParams({
     destination: searchText(hotel),
     startDate:   trip.checkIn,
@@ -136,11 +205,11 @@ function expediaGroupParams(hotel, trip) {
 }
 
 function buildExpediaLink(hotel, trip) {
-  return `https://www.expedia.com/Hotel-Search?${expediaGroupParams(hotel, trip)}`;
+  return `https://www.expedia.com/Hotel-Search?${expediaGroupParams(hotel, trip, 'expedia')}`;
 }
 
 function buildHotelsComLink(hotel, trip) {
-  return `https://www.hotels.com/Hotel-Search?${expediaGroupParams(hotel, trip)}`;
+  return `https://www.hotels.com/Hotel-Search?${expediaGroupParams(hotel, trip, 'hotelsCom')}`;
 }
 
 // ── Direct links to the hotel's own page on each platform ─────
@@ -153,16 +222,30 @@ function buildHotelsComLink(hotel, trip) {
 // Returns null whenever the address is not clearly a hotel page on the
 // expected site; the caller then keeps the search link.
 export function buildDirectLink(platform, sellerLink, quiz = {}, currency = '') {
+  if (!isBookable(platform)) return null;
   const dest = sellerDestination(sellerLink);
   if (!dest) return null;
   const trip = tripParams(quiz);
   try {
-    if (platform === 'bookingCom') return directBooking(dest, trip, currency);
-    if (platform === 'agoda')      return directAgoda(dest, trip, currency);
-    if (platform === 'expedia')    return directExpediaGroup(dest, trip, 'expedia.com');
-    if (platform === 'hotelsCom')  return directExpediaGroup(dest, trip, 'hotels.com');
+    if (platform === 'bookingCom') return finalize(platform, directBooking(dest, trip, currency));
+    if (platform === 'agoda')      return finalize(platform, directAgoda(dest, trip, currency));
+    if (platform === 'expedia')    return finalize(platform, directExpediaGroup(dest, trip, 'expedia.com'));
+    if (platform === 'hotelsCom')  return finalize(platform, directExpediaGroup(dest, trip, 'hotels.com'));
+    if (platform === 'tripCom')    return finalize(platform, directTripCom(dest));
   } catch { /* fall through */ }
   return null;
+}
+
+// Trip.com: Google's link already opens the hotel for these dates and
+// guests. Keep the page and its trip details; drop every tracking and
+// affiliate parameter so the click is credited through our own link.
+const TRACKING_PARAM = /^(utm_|gclid|gad_|gbraid|wbraid|msclkid|fbclid|allianceid$|sid$|ouid$|sub\d*$|label$|aid$|cid$|tag$|affcid$|afflid$|ref|source$|campaign|medium$|click|trace|token|locale$|promo|channel)/i;
+function directTripCom(dest) {
+  if (dest.protocol !== 'https:' || !/(^|\.)trip\.com$/i.test(dest.hostname)) return null;
+  if (!/hotel/i.test(dest.pathname)) return null;
+  const url = new URL(`https://www.trip.com${dest.pathname}`);
+  for (const [k, v] of dest.searchParams) if (!TRACKING_PARAM.test(k)) url.searchParams.append(k, v);
+  return String(url);
 }
 
 // Where a seller link leads, without its query: for diagnostics only.
@@ -196,7 +279,7 @@ function onSite(url, domain) {
 
 function directBooking(dest, trip, currency) {
   if (!onSite(dest, 'booking.com')) return null;
-  const { bookingCjLink, bookingAid } = ids();
+  const { bookingCjLink, bookingAid } = ids('bookingCom');
   const params = new URLSearchParams();
   let path;
 
@@ -237,7 +320,7 @@ function directBooking(dest, trip, currency) {
 
 function directAgoda(dest, trip, currency) {
   if (!onSite(dest, 'agoda.com')) return null;
-  const { agodaCid } = ids();
+  const { agodaCid } = ids('agoda');
   const hid = ['hid', 'hotel_id', 'hotelid', 'selectedproperty']
     .map(k => dest.searchParams.get(k)).find(v => /^\d{2,12}$/.test(v || ''));
   const common = { checkin: trip.checkIn, checkout: trip.checkOut, los: String(trip.nights),
@@ -271,7 +354,7 @@ function directExpediaGroup(dest, trip, domain) {
   // Google may hand out a regional site (expedia.ca, ca.hotels.com); hotel
   // ids are the same everywhere, so the link is rebuilt on the .com site.
   if (!onBrandSite(dest, domain.split('.')[0])) return null;
-  const { expediaAffcid, expediaAfflid } = ids();
+  const { expediaAffcid, expediaAfflid } = ids(domain === 'hotels.com' ? 'hotelsCom' : 'expedia');
   const selected = dest.searchParams.get('selected');
   let url;
   if (/^\d{2,12}$/.test(selected || '')) {

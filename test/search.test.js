@@ -693,3 +693,93 @@ test('hostels are left out unless the budget is the lowest; Agoda link carries b
   assert.equal(a.searchParams.get('checkin'), '2027-07-15');
   assert.equal(a.searchParams.get('site_id'), null);
 });
+
+// ── Which platforms earn for us ───────────────────────────────
+import { platformStatus, bookablePlatforms } from '../src/services/affiliateLinks.js';
+import { usageSnapshot } from '../src/services/usage.js';
+
+const withEnv = async (vars, fn) => {
+  const saved = {};
+  for (const k of Object.keys(vars)) { saved[k] = process.env[k]; if (vars[k] == null) delete process.env[k]; else process.env[k] = vars[k]; }
+  try { return await fn(); } finally { for (const k of Object.keys(vars)) { if (saved[k] == null) delete process.env[k]; else process.env[k] = saved[k]; } }
+};
+const ladder = () => ({ type: 'hotel', name: 'Hotel Uno', gps_coordinates: { latitude: 40.42, longitude: -3.70 }, prices: [
+  { source: 'Trip.com',    link: google('https://uk.trip.com/hotels/detail/?hotelId=991&checkIn=2027-07-15&checkOut=2027-07-20&adult=2&Allianceid=14&SID=22&utm_source=gha'), ...rate(180, 900) },
+  { source: 'Agoda',       link: google('https://www.agoda.com/partners/partnersearch.aspx?hid=777'), ...rate(190, 950) },
+  { source: 'Expedia.com', link: google('https://www.expedia.com/Hotel-Search?selected=42'), ...rate(200, 1000) },
+  { source: 'Booking.com', link: google('https://www.booking.com/searchresults.en.html?highlighted_hotels=55&dest_id=55&dest_type=hotel'), ...rate(205, 1025) },
+] });
+const unoHotel = () => { const b = normaliseProperty(gProp(), madrid, 'EUR'); return { ...b, affiliateLinks: buildAllAffiliateLinks(b, madrid) }; };
+
+test('a platform we are not approved for gets no button, only its price', async () => {
+  await withEnv({ SERPAPI_KEY: 'test', AFFILIATE_DISABLE: 'expedia, hotelsCom' }, async () => {
+    _clearLivePriceCache();
+    assert.deepEqual(bookablePlatforms(), ['bookingCom', 'agoda']);
+    assert.equal(platformStatus().expedia.via, 'disabled');
+    assert.equal(platformStatus().tripCom.bookable, false, 'Trip.com needs a Travelpayouts link');
+    const [h] = await pickBookable([unoHotel()], madrid, { fetchJson: async () => ladder() });
+    assert.deepEqual(Object.keys(h.affiliateLinks).filter(k => ['bookingCom', 'agoda', 'expedia', 'hotelsCom', 'tripCom'].includes(k)).sort(), ['agoda', 'bookingCom']);
+    assert.equal(h.platforms.expedia, undefined);
+    assert.deepEqual(h.livePrices.otherPrices, [{ seller: 'Trip.com', price: 180 }, { seller: 'Expedia.com', price: 200 }]);
+    assert.equal(h.bestPrice.platform, 'agoda', 'the best price is the best one we can send them to');
+    assert.deepEqual(h.livePrices.cheaperElsewhere, { seller: 'Trip.com', price: 180, official: false }, 'and the page still says where it is cheaper');
+  });
+});
+
+test('Travelpayouts: the hotel page goes into our Travelpayouts link, with no second tracker', async () => {
+  const tp = (p, c) => `https://tp.media/r?marker=654321&trs=11111&p=${p}&campaign_id=${c}&u=https%3A%2F%2Fexample.com`;
+  await withEnv({ SERPAPI_KEY: 'test', AFFILIATE_DISABLE: 'hotelsCom', TP_LINK_BOOKINGCOM: tp(1, 10), TP_LINK_TRIPCOM: tp(2, 20), TP_LINK_EXPEDIA: tp(3, 30) }, async () => {
+    _clearLivePriceCache();
+    const st = platformStatus();
+    assert.deepEqual([st.bookingCom.via, st.agoda.via, st.expedia.via, st.tripCom.via], ['travelpayouts', 'agoda cid', 'travelpayouts', 'travelpayouts']);
+    assert.equal(st.bookingCom.id, '654321');
+    const [h] = await pickBookable([unoHotel()], madrid, { fetchJson: async () => ladder() });
+
+    const b = new URL(h.affiliateLinks.bookingCom);
+    assert.equal(b.hostname, 'tp.media');
+    assert.equal(b.searchParams.get('marker'), '654321');
+    const page = new URL(b.searchParams.get('u'));
+    assert.equal(page.hostname, 'www.booking.com', 'straight to Booking.com, not through CJ as well');
+    assert.equal(page.searchParams.get('highlighted_hotels'), '55');
+    assert.equal(page.searchParams.get('aid'), null);
+
+    const e = new URL(new URL(h.affiliateLinks.expedia).searchParams.get('u'));
+    assert.equal(e.searchParams.get('selected'), '42');
+    assert.equal(e.searchParams.get('affcid'), null, 'our direct Expedia id is not added on top of Travelpayouts');
+
+    const t = new URL(new URL(h.affiliateLinks.tripCom).searchParams.get('u'));
+    assert.equal(t.origin + t.pathname, 'https://www.trip.com/hotels/detail/');
+    assert.equal(t.searchParams.get('hotelId'), '991');
+    assert.equal(t.searchParams.get('checkIn'), '2027-07-15');
+    assert.equal(t.searchParams.get('Allianceid'), null, "Trip.com's own partner ids are stripped");
+    assert.equal(t.searchParams.get('SID'), null);
+    assert.equal(t.searchParams.get('utm_source'), null);
+    assert.equal(h.bestPrice.platform, 'tripCom', 'now the cheapest site is one we earn from');
+    assert.equal(h.livePrices.cheaperElsewhere, null);
+
+    assert.match(new URL(h.affiliateLinks.agoda).searchParams.get('cid'), /^1966785$/, 'Agoda stays on our own id');
+
+    // The click id lands in Travelpayouts' sub_id.
+    const tracked = trackHotelLinks(h, { baseUrl: 'https://api.example', searchId: 'aa11', channel: 'web' });
+    const r = resolveClick(Object.fromEntries(new URL(tracked.affiliateLinks.tripCom).searchParams));
+    assert.equal(r.click.subIdParam, 'sub_id');
+    assert.match(new URL(r.url).searchParams.get('sub_id'), /^web-aa11-/);
+    assert.equal(new URL(new URL(r.url).searchParams.get('u')).hostname, 'www.trip.com');
+  });
+});
+
+test('the same hotel and trip is paid for once, however many travellers ask', async () => {
+  await withEnv({ SERPAPI_KEY: 'test' }, async () => {
+    _clearLivePriceCache();
+    let paid = 0;
+    const fetchJson = async () => { paid++; return ladder(); };
+    const before = usageSnapshot().priceCacheHits;
+    await pickBookable([unoHotel()], madrid, { fetchJson });
+    await pickBookable([unoHotel()], { ...madrid, freeText: 'another traveller, other wishes' }, { fetchJson });
+    await pickBookable([unoHotel()], madrid, { fetchJson });
+    assert.equal(paid, 1);
+    assert.equal(usageSnapshot().priceCacheHits - before, 2);
+    await pickBookable([unoHotel()], { ...madrid, checkOut: '2027-07-21' }, { fetchJson });
+    assert.equal(paid, 2, 'other dates are another price');
+  });
+});

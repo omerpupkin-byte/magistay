@@ -8,6 +8,9 @@ import cors         from 'cors';
 import searchRouter from './routes/search.js';
 import goRouter     from './routes/go.js';
 import { clickStats } from './services/clickLinks.js';
+import { storeStatus } from './services/store.js';
+import { usageSnapshot } from './services/usage.js';
+import { platformStatus } from './services/affiliateLinks.js';
 import { googleHotelsEnabled } from './services/googleHotelsAPI.js';
 import { claudeKeyShape, claudeModel } from './services/claude.js';
 import { lastAIFailure } from './services/aiMatcher.js';
@@ -72,7 +75,7 @@ app.get('/health', (_req, res) => {
   // Which pieces are switched on — booleans only, never the keys themselves.
   res.json({
     status:  'ok',
-    version: '0.4.5',
+    version: '0.5.0',
     mode:    process.env.ANTHROPIC_API_KEY ? 'ai' : 'mock',
     sources: {
       claude:    !!process.env.ANTHROPIC_API_KEY,
@@ -87,6 +90,9 @@ app.get('/health', (_req, res) => {
     claudeKey: claudeKeyShape(),
     claudeModel: claudeModel(),
     claudeLastError: lastAIFailure()?.message?.slice(0, 120) || null,
+    affiliate: platformStatus(),
+    store:   storeStatus(),
+    usage:   usageSnapshot(),
     clicks:  clickStats(),
     ts:      new Date().toISOString(),
   });
