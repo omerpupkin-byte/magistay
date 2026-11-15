@@ -57,6 +57,7 @@ async function runSearch(input, report = null, ctx = {}) {
 
   console.log(`[SEARCH] "${quiz.destination}" · ${quiz.adults}A ${quiz.children}C ${quiz.infants}I · ${quiz.checkIn}→${quiz.checkOut}`);
 
+  const t0 = Date.now(); const timings = {};
   // 1. Candidates. AI suggestions are tailored to the traveller, so
   //    only real supplier results are shared between travellers.
   const key = tripKey(quiz);
@@ -66,6 +67,8 @@ async function runSearch(input, report = null, ctx = {}) {
     found = await searchHotels(quiz);
     if (!found.preMatched && found.hotels.length > 0) setCache(key, found);
   }
+
+  timings.candidatesMs = Date.now() - t0;
 
   if (found.hotels.length === 0) {
     return { status: 200, body: { hotels: [], meta: meta(quiz, found, cached, 0) } };
@@ -79,11 +82,15 @@ async function runSearch(input, report = null, ctx = {}) {
     ? found.hotels
     : await matchHotelsWithAI(quiz, found.hotels, { limit: live ? SHOW + RESERVE : SHOW });
 
+  timings.matchingMs = Date.now() - t0 - timings.candidatesMs;
+
   // 3. Live price per booking platform; keeps the best SHOW that can be
   //    booked. Demo data keeps its sample prices. Never throws.
   const priced = live ? await pickBookable(matched, quiz, { show: SHOW, report }) : matched.slice(0, SHOW);
 
   // 4. Review summaries, where real review text exists.
+  timings.pricesMs = Date.now() - t0 - timings.candidatesMs - timings.matchingMs;
+
   // 5. Booking buttons go through /go, so every click is recorded and
   //    stamped with a click id the affiliate networks report back.
   const searchId = newSearchId();
@@ -93,6 +100,8 @@ async function runSearch(input, report = null, ctx = {}) {
 
   const m = meta(quiz, found, cached, hotels.length);
   m.searchId = searchId;
+  timings.totalMs = Date.now() - t0;
+  m.timings = timings;
   // What actually ranked these hotels, not what is configured.
   if (!found.preMatched) m.matching = hotels.some(h => h.matchedBy === 'ai') ? 'ai' : 'rules';
   m.livePrices = hotels.filter(h => h.priceType === 'live').length;
@@ -114,50 +123,94 @@ router.post('/search', async (req, res, next) => {
 // what is shown, at what price per platform, where each button leads,
 // and what the live-price lookup found for every hotel it checked.
 // For checking the live site without clicking through the quiz.
-//   /api/search/check?destination=Madrid&checkIn=2026-11-24&checkOut=2026-11-27&adults=2
-// Add any extra path segment (/api/search/check/2?...) to force a fresh run
-// when something between you and the server keeps an old answer.
+//   /api/search/check/1?destination=Madrid&checkIn=2026-11-24&checkOut=2026-11-27&adults=2
+//
+// A search can take longer than a simple page fetch is willing to wait,
+// so the check runs as a job: the address answers within a few seconds,
+// either with the report or with "running" and the address to read the
+// report from. Change the number after /check/ for a fresh run.
+const jobs = new Map();                 // id -> { startedAt, done, report, error }
+const JOB_TTL = 15 * 60 * 1000, WAIT_MS = 8000;
+
+function startJob(id, query, ctx) {
+  for (const [k, j] of jobs) if (Date.now() - j.startedAt > JOB_TTL) jobs.delete(k);
+  if (jobs.size > 50) jobs.delete(jobs.keys().next().value);
+  const job = { startedAt: Date.now(), done: false, report: null, error: null };
+  jobs.set(id, job);
+  job.promise = buildCheckReport(query, ctx)
+    .then(r => { job.report = r; })
+    .catch(e => { job.error = String(e?.message || e).slice(0, 300); })
+    .finally(() => { job.done = true; job.tookMs = Date.now() - job.startedAt; });
+  return job;
+}
+
+async function answerJob(res, id, job, baseUrl, step) {
+  await Promise.race([job.promise, new Promise(r => setTimeout(r, WAIT_MS))]);
+  if (!job.done) {
+    return res.json({ status: 'running', elapsedMs: Date.now() - job.startedAt,
+      readTheReportHere: `${baseUrl}/api/search/result/${id}/${step + 1}` });
+  }
+  if (job.error) return res.status(500).json({ status: 'failed', error: job.error, tookMs: job.tookMs });
+  res.status(job.report.status).json({ status: 'done', tookMs: job.tookMs, ...job.report.body });
+}
+
 router.get(['/search/check', '/search/check/:run'], async (req, res, next) => {
   try {
-    const startedAt = Date.now();
-    const q = req.query;
-    const list = v => (typeof v === 'string' && v ? v.split(',').map(x => x.trim()).filter(Boolean) : []);
-    const report = [];
-    const { status, body } = await runSearch({
-      destination: q.destination, checkIn: q.checkIn, checkOut: q.checkOut,
-      adults: Number(q.adults) || 2, children: Number(q.children) || 0, infants: Number(q.infants) || 0,
-      rooms: Number(q.rooms) || 1, childAges: list(q.childAges).map(Number),
-      stars: Number(q.stars) || 0, budget: q.budget, radiusKm: Number(q.radiusKm) || undefined,
-      priorities: list(q.priorities), purpose: list(q.purpose), vibes: list(q.vibes),
-      freeText: typeof q.freeText === 'string' ? q.freeText : '',
-    }, report, context(req, 'check'));
-    if (status !== 200) return res.status(status).json(body);
-
-    res.json({
-      meta: body.meta,
-      shown: body.hotels.map((h, i) => ({
-        rank: i + 1, name: h.name, matchScore: h.matchScore, matchedBy: h.matchedBy,
-        matchReason: h.matchReason, priceType: h.priceType, currency: h.currency,
-        stars: h.stars, rating: h.riScore, reviews: h.totalReviews, distanceKm: h.distanceKm,
-        needs: h.needsCheck, highlights: h.highlights,
-        bestPrice: h.bestPrice, listPrice: h.platforms?.google?.price ?? h.platforms?.hotelbeds?.price ?? null,
-        platforms: Object.fromEntries(['bookingCom', 'agoda', 'expedia', 'hotelsCom'].map(k => [k, h.platforms?.[k]
-          ? { perNight: h.platforms[k].price, total: h.platforms[k].total, directLink: !!h.platforms[k].direct }
-          : null])),
-        // Where each button finally leads (the page itself gets these wrapped in /go).
-        links: Object.fromEntries(['bookingCom', 'agoda', 'expedia', 'hotelsCom'].map(k => [k, h.affiliateLinks?.[k] ? destinationOf(h.affiliateLinks[k]) : null])),
-        tracked: ['bookingCom', 'agoda', 'expedia', 'hotelsCom'].filter(k => /\/go\?/.test(h.affiliateLinks?.[k] || '')),
-      })),
-      aiMatcher: body.meta.matching === 'ai'
-        ? { ok: true, model: claudeModel(), answeredInMs: lastAIDurationMs() }
-        : { fellBackToRules: true, model: claudeModel(), lastFailure: lastAIFailure() },
-      tookMs: Date.now() - startedAt,
-      livePriceLookups: report,
-    });
-  } catch (err) {
-    next(err);
-  }
+    const ctx = context(req, 'check');
+    const id  = `${String(req.params.run || '0').replace(/[^\w-]/g, '').slice(0, 20)}-${newSearchId()}`;
+    await answerJob(res, id, startJob(id, req.query, ctx), ctx.baseUrl, 0);
+  } catch (err) { next(err); }
 });
+
+router.get('/search/result/:id/:step?', async (req, res, next) => {
+  try {
+    const job = jobs.get(req.params.id);
+    if (!job) return res.status(404).json({ status: 'unknown', error: 'No such check, or it is older than 15 minutes. Start a new one.' });
+    await answerJob(res, req.params.id, job, context(req).baseUrl, Number(req.params.step) || 1);
+  } catch (err) { next(err); }
+});
+
+async function buildCheckReport(q, ctx) {
+  const list = v => (typeof v === 'string' && v ? v.split(',').map(x => x.trim()).filter(Boolean) : []);
+  const report = [];
+  const { status, body } = await runSearch({
+    destination: q.destination, checkIn: q.checkIn, checkOut: q.checkOut,
+    adults: Number(q.adults) || 2, children: Number(q.children) || 0, infants: Number(q.infants) || 0,
+    rooms: Number(q.rooms) || 1, childAges: list(q.childAges).map(Number),
+    stars: Number(q.stars) || 0, budget: q.budget, radiusKm: Number(q.radiusKm) || undefined,
+    priorities: list(q.priorities), purpose: list(q.purpose), vibes: list(q.vibes),
+    freeText: typeof q.freeText === 'string' ? q.freeText : '',
+  }, report, ctx);
+  if (status !== 200) return { status, body };
+
+  const PLATFORMS = ['bookingCom', 'agoda', 'expedia', 'hotelsCom'];
+  return { status: 200, body: {
+    meta: body.meta,
+    aiMatcher: body.meta.matching === 'ai'
+      ? { ok: true, model: claudeModel(), answeredInMs: lastAIDurationMs() }
+      : { fellBackToRules: true, model: claudeModel(), lastFailure: lastAIFailure() },
+    shown: body.hotels.map((h, i) => ({
+      rank: i + 1, name: h.name, matchScore: h.matchScore, matchedBy: h.matchedBy,
+      matchReason: h.matchReason, priceType: h.priceType, currency: h.currency,
+      stars: h.stars, rating: h.riScore, reviews: h.totalReviews, distanceKm: h.distanceKm,
+      needs: h.needsCheck, highlights: h.highlights,
+      bestPrice: h.bestPrice, listPrice: h.platforms?.google?.price ?? h.platforms?.hotelbeds?.price ?? null,
+      platforms: Object.fromEntries(PLATFORMS.map(k => [k, h.platforms?.[k]
+        ? { perNight: h.platforms[k].price, total: h.platforms[k].total, directLink: !!h.platforms[k].direct }
+        : null])),
+      // Where each button finally leads (the page itself gets these wrapped in /go).
+      links: Object.fromEntries(PLATFORMS.map(k => [k, h.affiliateLinks?.[k] ? destinationOf(h.affiliateLinks[k]) : null])),
+      tracked: PLATFORMS.filter(k => /\/go\?/.test(h.affiliateLinks?.[k] || '')),
+    })),
+    // Sellers that are not ours are summarised: how many, and the cheapest.
+    livePriceLookups: report.map(l => {
+      const others = (l.sellers || []).filter(x => !x.ours);
+      return { hotel: l.hotel, result: l.result, googleName: l.googleName, error: l.error,
+        ours: (l.sellers || []).filter(x => x.ours),
+        otherSellers: others.length, cheapestOther: others[0] ? { seller: others[0].seller, perNight: others[0].perNight } : null };
+    }),
+  } };
+}
 
 // Where this API is reached from the outside (for /go links) and which
 // channel the search came from (web, wa, check).
