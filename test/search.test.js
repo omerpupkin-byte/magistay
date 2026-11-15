@@ -444,7 +444,7 @@ test('the matcher returns as many ranked hotels as asked', async () => {
   assert.equal((await matchHotelsWithAI(quiz, many)).length, 5);
   assert.equal((await matchHotelsWithAI(quiz, many, { limit: 8 })).length, 8);
   assert.equal((await matchHotelsWithAI(quiz, many, { limit: 15 })).length, 12, 'never more than there are');
-  assert.match(buildMatchPrompt(quiz, many, 8), /Pick the 8 hotels/);
+  assert.match(buildMatchPrompt(quiz, many, 8), /Pick up to 8 hotels/);
   if (saved) process.env.ANTHROPIC_API_KEY = saved;
 });
 
@@ -653,4 +653,43 @@ test('rule ranking: without a budget, the far-above-average hotel is not a defau
   assert.equal(any[0], 'Fair', 'same score as Other, but far more reviews');
   const lux = rankByRules({ destination: 'Madrid', budget: '250plus' }, pool).map(h => h.name);
   assert.ok(lux.indexOf('Ritz') < any.indexOf('Ritz'), 'with a stated luxury budget the Ritz is not pushed down');
+});
+
+test('AI answers are held to the data: no invented "no", no confirmed wishes, no poor fits', async () => {
+  const { _applyAIResultForTest } = await import('../src/services/aiMatcher.js');
+  const q = { ...madrid, priorities: ['Pool', 'Spa', 'Beach access'], freeText: 'quiet room with blackout curtains' };
+  const pool = [gProp(), gProp({ name: 'Hotel Dos', property_token: 'TOK2' }), gProp({ name: 'Hotel Tres', property_token: 'TOK3' })]
+    .map(p => baselineScore(q, normaliseProperty(p, q, 'EUR')));
+  const out = _applyAIResultForTest(q, pool, [
+    { id: 'google-TOK1', matchScore: 91, matchReason: 'Fits.', highlights: ['a'],
+      needs: [{ need: 'Pool', status: 'yes', note: 'Rooftop pool' }, { need: 'Spa', status: 'no', note: 'Not listed' }, { need: 'Beach access', status: 'yes' }],
+      wishes: [{ wish: 'Quiet room', status: 'likely', note: 'Sleep 83% positive' }, { wish: 'Blackout curtains', status: 'yes', note: 'surely' }, { wish: 'Pool', status: 'likely', note: 'dup' }] },
+    { id: 'google-TOK2', matchScore: 54, matchReason: 'Poor.', needs: [], wishes: [] },
+    { id: 'google-TOK3', matchScore: 70, matchReason: 'Ok.', needs: [{ need: 'Spa', status: 'yes', note: 'spa in description' }] },
+  ]);
+  assert.deepEqual(out.map(h => h.name), ['Hotel Uno', 'Hotel Tres'], 'the 54-point pick is dropped');
+  const by = Object.fromEntries(out[0].needsCheck.map(n => [n.need, n]));
+  assert.equal(by['Pool'].status, 'yes');
+  assert.equal(by['Pool'].note, 'Rooftop pool');
+  assert.equal(by['Spa'].status, 'unknown', 'not listed is not "no"');
+  assert.equal(by['Beach access'].status, 'no', 'the listing says no; the AI cannot overrule it');
+  assert.equal(by['Quiet room'].status, 'likely');
+  assert.equal(by['Blackout curtains'].status, 'unknown', 'a wish is never confirmed');
+  assert.equal(out[0].needsCheck.filter(n => n.need === 'Pool').length, 1);
+  assert.equal(out[1].needsCheck.find(n => n.need === 'Spa').status, 'likely', 'AI saw it, data silent');
+  assert.match(buildMatchPrompt(q, pool), /SAME labels for every hotel/);
+});
+
+test('hostels are left out unless the budget is the lowest; Agoda link carries both date forms', async () => {
+  const fetchJson = async () => ({ properties: [gProp(), gProp({ name: 'Generator Madrid', property_token: 'G', description: 'Hip hostel with a rooftop bar.' }), gProp({ name: 'One Star Inn', property_token: 'O', extracted_hotel_class: 1 })] });
+  assert.deepEqual((await searchGoogleHotels(madrid, { fetchJson })).map(h => h.name), ['Hotel Uno']);
+  assert.equal((await searchGoogleHotels({ ...madrid, budget: 'u80' }, { fetchJson })).length, 3);
+  const a = new URL(buildDirectLink('agoda', google('https://www.agoda.com/partners/partnersearch.aspx?site_id=1&hid=245957&CkInDay=1'), quiz, 'EUR'));
+  assert.equal(a.searchParams.get('CkInDay'), '15');
+  assert.equal(a.searchParams.get('CkInMonth'), '7');
+  assert.equal(a.searchParams.get('CkOutYear'), '2027');
+  assert.equal(a.searchParams.get('NumberOfAdults'), '2');
+  assert.equal(a.searchParams.get('PartnerCurrency'), 'EUR');
+  assert.equal(a.searchParams.get('checkin'), '2027-07-15');
+  assert.equal(a.searchParams.get('site_id'), null);
 });

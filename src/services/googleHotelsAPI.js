@@ -47,6 +47,7 @@ export async function searchGoogleHotels(quiz, { fetchJson = serpApiFetch } = {}
     const res = await fetchJson(pageToken ? { ...params, next_page_token: pageToken } : params);
     for (const p of res?.properties || []) {
       if (!usable(p) || seen.has(p.property_token)) continue;
+      if (isHostel(p) && quiz.budget !== 'u80') continue;   // dorm beds are for the lowest budget only
       seen.add(p.property_token);
       hotels.push(normaliseProperty(p, quiz, currency));
     }
@@ -70,6 +71,11 @@ function usable(p) {
     && p.sponsored !== true
     && !/vacation rental/i.test(p.type || '')
     && nightly(p.rate_per_night) != null;
+}
+
+// Hostels list a per-bed price that makes them look like a bargain hotel.
+function isHostel(p) {
+  return /\bhostel\b/i.test(`${p.name} ${p.type || ''} ${p.description || ''}`) || Number(p.extracted_hotel_class) === 1;
 }
 
 // ── Google's property → our hotel shape ───────────────────────

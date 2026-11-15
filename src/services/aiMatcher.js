@@ -13,7 +13,7 @@ import { askClaudeJSON, hasClaude } from './claude.js';
 import { describeTraveller, listNeeds, checkAllNeeds } from './travellerProfile.js';
 
 const MAX_RESULTS    = 5;
-const MAX_CANDIDATES = 14;   // sent to the AI; keeps the call fast
+const MAX_CANDIDATES = 12;   // sent to the AI; keeps the call fast
 
 // ── Main entry ────────────────────────────────────────────────
 // `limit` is how many ranked hotels to return. The search asks for more
@@ -21,6 +21,7 @@ const MAX_CANDIDATES = 14;   // sent to the AI; keeps the call fast
 // replaced by the next best match. Claude ranks at most MAX_AI_RANKED
 // (a longer answer is slow); the rest of the list follows the rule ranking.
 const MAX_AI_RANKED = 6;
+const MIN_AI_SCORE  = 60;   // below this the AI's own verdict is "poor fit"
 
 // Why the last AI call fell back to rules, for the check endpoint.
 let lastFailure = null;
@@ -100,7 +101,7 @@ THE CANDIDATE HOTELS (all have a room on these dates unless marked otherwise)
 ${hotels.map(formatHotelForPrompt).join('\n\n')}
 
 YOUR TASK
-Pick the ${Math.min(limit, hotels.length)} hotels that best fit THIS traveller and rank them, best first.
+Pick up to ${Math.min(limit, hotels.length)} hotels that fit THIS traveller and rank them, best first. Leave out a hotel that is plainly a poor fit (wrong kind of place, misses most of what they asked for) rather than filling the list.
 
 Judge fit the way a great agent would: who is travelling and why, the stated must-haves and needs, location for their plans, value against their budget, and guest rating. A hotel that misses a must-have should rank below one that meets it, unless everything else is far better.
 
@@ -109,7 +110,10 @@ Rules about facts — these matter more than anything else:
 - If the data does not say whether the hotel has something, the status is "unknown". Never guess "yes".
 - "Stated as NOT offered" is a fact: that need is "no".
 - Review themes are evidence about quality (sleep, cleanliness, service...), not proof that a facility exists.
+- A need that is simply not mentioned is "unknown", not "no". "no" is only for something stated as NOT offered.
 - Prices shown are indicative. Do not promise a price.
+
+The traveller's own words: if they contain specific wishes that are not in the needs list (for example "quiet room", "blackout curtains", "walk to the beach"), turn them into at most 3 short wish labels and use the SAME labels for every hotel. For each wish say whether this hotel's description or review themes support it ("likely") or the data is silent ("unknown"). Never "yes": nothing here proves a wish. If there are no such wishes, "wishes" is an empty array.
 
 Return ONLY valid JSON, no prose around it:
 {
@@ -117,9 +121,10 @@ Return ONLY valid JSON, no prose around it:
     {
       "id": "<hotel id exactly as given>",
       "matchScore": <0-100, honest — reserve 90+ for a hotel that meets every stated need>,
-      "matchReason": "<2 sentences to the traveller, specific to their trip. Mention the most important fit and, if there is one, the main compromise.>",
+      "matchReason": "<max 35 words to the traveller, specific to their trip: the most important fit and, if there is one, the main compromise.>",
       "needs": [${needs.length ? '\n        { "need": "<need label exactly as listed below>", "status": "yes" | "no" | "unknown", "note": "<optional, max 8 words>" }\n      ' : ''}],
-      "highlights": ["<up to 3 short facts from the data that suit this traveller>"]
+      "wishes": [{ "wish": "<short label>", "status": "likely" | "unknown", "note": "<the evidence, max 10 words; omit when unknown>" }],
+      "highlights": ["<up to 3 short facts from the data that suit this traveller, max 8 words each>"]
     }
   ]
 }
@@ -174,24 +179,46 @@ function applyAIResult(quiz, hotels, matches) {
       .filter(n => n && typeof n.need === 'string' && ['yes', 'no', 'unknown'].includes(n.status))
       .map(n => [n.need.toLowerCase(), n]));
 
+    // The data decides what is confirmed; the AI may add nuance, not facts:
+    //   data yes / no      -> stays, with the AI's note if it agrees
+    //   data silent, AI yes -> "likely" (it read it somewhere, e.g. the description)
+    //   data silent, AI no  -> "unknown" (not mentioned is not the same as absent)
     const needsCheck = needs.map(need => {
-      const ai = fromAI.get(need.toLowerCase());
-      if (!ai) return fromData.get(need.toLowerCase()) || { need, status: 'unknown' };
-      const item = { need, status: ai.status };
-      if (typeof ai.note === 'string' && ai.note.trim()) item.note = ai.note.trim().slice(0, 80);
-      return item;
+      const data = fromData.get(need.toLowerCase()) || { need, status: 'unknown' };
+      const ai   = fromAI.get(need.toLowerCase());
+      if (!ai) return data;
+      const note = typeof ai.note === 'string' && ai.note.trim() ? ai.note.trim().slice(0, 80) : null;
+      if (data.status === 'yes' || data.status === 'no') {
+        return ai.status === data.status && note ? { ...data, note } : data;
+      }
+      if (ai.status === 'yes') return { need, status: 'likely', ...(note ? { note } : {}) };
+      return data;
     });
+
+    // Wishes taken from the traveller's own words. Never "confirmed".
+    const wishes = (Array.isArray(m.wishes) ? m.wishes : [])
+      .filter(w => w && typeof w.wish === 'string' && w.wish.trim())
+      .slice(0, 3)
+      .map(w => {
+        const likely = w.status === 'likely' && typeof w.note === 'string' && w.note.trim();
+        return { need: w.wish.trim().slice(0, 40), status: likely ? 'likely' : 'unknown', fromFreeText: true,
+                 ...(likely ? { note: w.note.trim().slice(0, 80) } : {}) };
+      })
+      .filter(w => !needsCheck.some(n => n.need.toLowerCase() === w.need.toLowerCase()));
 
     result.push({
       ...hotel,
       matchScore:  clampScore(m.matchScore, hotel.matchScore),
       matchReason: typeof m.matchReason === 'string' && m.matchReason.trim() ? m.matchReason.trim() : hotel.matchReason,
-      needsCheck,
+      needsCheck:  needsCheck.concat(wishes),
       highlights:  Array.isArray(m.highlights) ? m.highlights.filter(x => typeof x === 'string').slice(0, 3) : [],
       matchedBy:   'ai',
     });
   }
-  return result.sort((a, b) => b.matchScore - a.matchScore);
+  result.sort((a, b) => b.matchScore - a.matchScore);
+  // A pick the AI itself scores as a poor fit is not a recommendation.
+  // Keep the top one whatever its score, so the list is never empty.
+  return result.filter((h, i) => i === 0 || h.matchScore >= MIN_AI_SCORE);
 }
 
 function clampScore(value, fallback) {
@@ -247,3 +274,6 @@ function budgetFit(budget, price) {
   if (price < band[0] * 0.6)  return 'under';
   return 'within';
 }
+
+// For tests.
+export const _applyAIResultForTest = applyAIResult;

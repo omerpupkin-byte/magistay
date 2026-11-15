@@ -245,7 +245,16 @@ function directAgoda(dest, trip, currency) {
   let url;
   if (hid) {
     url = new URL('https://www.agoda.com/partners/partnersearch.aspx');
-    url.search = String(new URLSearchParams({ pcs: '1', hid, ...common }));
+    // Dates and guests are sent twice: in the documented affiliate form
+    // (checkin, los, adults...) and in the form Agoda's own price links
+    // use on this same page (CkInDay, NumberOfAdults...).
+    const [iy, im, id] = trip.checkIn.split('-').map(Number);
+    const [oy, om, od] = trip.checkOut.split('-').map(Number);
+    url.search = String(new URLSearchParams({ pcs: '1', hid, ...common,
+      CkInDay: String(id), CkInMonth: String(im), CkInYear: String(iy),
+      CkOutDay: String(od), CkOutMonth: String(om), CkOutYear: String(oy),
+      NumberOfAdults: String(trip.adults), NumberOfChildren: String(trip.ages.length), NumberOfRooms: String(trip.rooms),
+      ...(currency ? { PartnerCurrency: currency } : {}) }));
   } else if (/^\/[a-z0-9-]+(?:\/[a-z0-9-]+)*\/hotel\/[a-z0-9-]+\.html$/i.test(dest.pathname)) {
     url = new URL(`https://www.agoda.com${dest.pathname}`);
     url.search = String(new URLSearchParams({ ...common, checkIn: trip.checkIn }));
