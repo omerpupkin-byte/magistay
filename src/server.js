@@ -7,6 +7,9 @@ import express      from 'express';
 import cors         from 'cors';
 import searchRouter from './routes/search.js';
 import goRouter     from './routes/go.js';
+import chatRouter   from './routes/chat.js';
+import waRouter, { whatsappStatus } from './routes/whatsapp.js';
+import { reviewEvidenceEnabled } from './services/reviewEvidence.js';
 import { clickStats } from './services/clickLinks.js';
 import { storeStatus } from './services/store.js';
 import { usageSnapshot } from './services/usage.js';
@@ -21,7 +24,8 @@ const PORT = process.env.PORT || 3001;
 // ── Middleware ─────────────────────────────────────────────────
 app.set('trust proxy', 1);            // Railway sits behind a proxy; needed for real client IPs
 app.use(cors({ origin: allowedOrigins() }));
-app.use(express.json({ limit: '50kb' }));
+// The raw body is kept so WhatsApp calls can be checked against Meta's signature.
+app.use(express.json({ limit: '100kb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 // FRONTEND_URL may list several origins, comma-separated. The www and
 // non-www form of each is accepted, so either address of the site works.
@@ -55,6 +59,19 @@ app.use('/api/search', (req, res, next) => {
   next();
 });
 
+// A chat turn costs a Claude call and often a search: 40 per visitor per 10 minutes.
+const chatHits = new Map();
+app.use('/api/chat', (req, res, next) => {
+  if (req.method === 'GET' && req.path.startsWith('/reply')) return next();
+  const now = Date.now();
+  const recent = (chatHits.get(req.ip) || []).filter(t => now - t < WINDOW_MS);
+  if (recent.length >= 40) return res.status(429).json({ error: 'Too many messages. Please try again in a few minutes.' });
+  recent.push(now);
+  chatHits.set(req.ip, recent);
+  if (chatHits.size > 5000) chatHits.delete(chatHits.keys().next().value);
+  next();
+});
+
 // ── Request logger (dev only) ──────────────────────────────────
 if (process.env.NODE_ENV !== 'production') {
   app.use((req, _res, next) => {
@@ -68,6 +85,8 @@ if (process.env.NODE_ENV !== 'production') {
 app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 app.use('/api', searchRouter);
 app.use('/go', goRouter);              // tracked booking clicks
+app.use('/wa', waRouter);              // WhatsApp webhook
+app.use('/', chatRouter);              // /api/chat and the /chat simulator
 
 // ── Health check ───────────────────────────────────────────────
 app.get('/health', (_req, res) => {
@@ -75,7 +94,7 @@ app.get('/health', (_req, res) => {
   // Which pieces are switched on — booleans only, never the keys themselves.
   res.json({
     status:  'ok',
-    version: '0.5.0',
+    version: '0.6.0',
     mode:    process.env.ANTHROPIC_API_KEY ? 'ai' : 'mock',
     sources: {
       claude:    !!process.env.ANTHROPIC_API_KEY,
@@ -90,6 +109,8 @@ app.get('/health', (_req, res) => {
     claudeKey: claudeKeyShape(),
     claudeModel: claudeModel(),
     claudeLastError: lastAIFailure()?.message?.slice(0, 120) || null,
+    reviewEvidence: reviewEvidenceEnabled(),
+    whatsapp: whatsappStatus(),
     affiliate: platformStatus(),
     store:   storeStatus(),
     usage:   usageSnapshot(),

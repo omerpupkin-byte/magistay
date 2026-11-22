@@ -16,6 +16,7 @@ import { hasClaude }         from '../services/claude.js';
 import { pickBookable, livePricesEnabled } from '../services/livePrices.js';
 import { trackHotelLinks, destinationOf, newSearchId } from '../services/clickLinks.js';
 import { cacheGet, cacheSet } from '../services/store.js';
+import { addReviewEvidence, reviewEvidenceEnabled } from '../services/reviewEvidence.js';
 import { count, usageSnapshot, usageDelta } from '../services/usage.js';
 import { ALL_PLATFORMS, platformStatus } from '../services/affiliateLinks.js';
 
@@ -47,6 +48,8 @@ async function runSearch(input, report = null, ctx = {}) {
   const { valid, error, quiz } = validateQuiz(input);
   if (!valid) return { status: 400, body: { error: `Invalid request: ${error}` } };
   if (!quiz.destination) return { status: 400, body: { error: 'Invalid request: destination is required' } };
+  // The language to write reasons and notes in (chat channels pass the traveller's).
+  if (ctx.language && /^[a-z]{2}(-[a-z]{2})?$/i.test(ctx.language)) quiz.language = ctx.language.toLowerCase();
 
   console.log(`[SEARCH] "${quiz.destination}" · ${quiz.adults}A ${quiz.children}C ${quiz.infants}I · ${quiz.checkIn}→${quiz.checkOut}`);
 
@@ -81,15 +84,21 @@ async function runSearch(input, report = null, ctx = {}) {
 
   // 3. Live price per booking platform; keeps the best SHOW that can be
   //    booked. Demo data keeps its sample prices. Never throws.
-  const priced = live ? await pickBookable(matched, quiz, { show: SHOW, report }) : matched.slice(0, SHOW);
+  const show   = Math.max(1, Math.min(SHOW, Number(ctx.show) || SHOW));     // a chat shows fewer than the site
+  const priced = live ? await pickBookable(matched, quiz, { show, report }) : matched.slice(0, show);
 
   // 4. Review summaries, where real review text exists.
   timings.pricesMs = Date.now() - t0 - timings.candidatesMs - timings.matchingMs;
 
+  // 4. What guests say about the points the data left open (a quiet room,
+  //    blackout curtains...). Only when there is something open to check.
+  const judged = found.source !== 'mock' && reviewEvidenceEnabled() ? await addReviewEvidence(priced, quiz) : priced;
+  timings.reviewsMs = Date.now() - t0 - timings.candidatesMs - timings.matchingMs - timings.pricesMs;
+
   // 5. Booking buttons go through /go, so every click is recorded and
   //    stamped with a click id the affiliate networks report back.
   const searchId = newSearchId();
-  const hotels = (await summariseReviews(priced))
+  const hotels = (await summariseReviews(judged))
     .map(h => trackHotelLinks(h, { baseUrl: ctx.baseUrl, searchId, channel: ctx.channel || 'web' }))
     .map(publicHotel);
 
@@ -176,7 +185,7 @@ async function buildCheckReport(q, ctx) {
     stars: Number(q.stars) || 0, budget: q.budget, radiusKm: Number(q.radiusKm) || undefined,
     priorities: list(q.priorities), purpose: list(q.purpose), vibes: list(q.vibes),
     freeText: typeof q.freeText === 'string' ? q.freeText : '',
-  }, report, ctx);
+  }, report, { ...ctx, language: typeof q.lang === 'string' ? q.lang : undefined });
   if (status !== 200) return { status, body };
 
   const PLATFORMS = ALL_PLATFORMS;
@@ -192,7 +201,7 @@ async function buildCheckReport(q, ctx) {
       rank: i + 1, name: h.name, matchScore: h.matchScore, matchedBy: h.matchedBy,
       matchReason: h.matchReason, priceType: h.priceType, currency: h.currency,
       stars: h.stars, rating: h.riScore, reviews: h.totalReviews, distanceKm: h.distanceKm,
-      needs: h.needsCheck, highlights: h.highlights,
+      needs: h.needsCheck, highlights: h.highlights, reviewEvidence: h.reviewEvidence || null,
       otherPrices: h.livePrices?.otherPrices || [], cheaperElsewhere: h.livePrices?.cheaperElsewhere || null,
       bestPrice: h.bestPrice, listPrice: h.platforms?.google?.price ?? h.platforms?.hotelbeds?.price ?? null,
       platforms: Object.fromEntries(PLATFORMS.map(k => [k, h.platforms?.[k]
@@ -249,4 +258,5 @@ router.get('/search/test', (_req, res) => {
   res.json({ ok: true, message: 'Search route is alive' });
 });
 
+export { runSearch, context };
 export default router;

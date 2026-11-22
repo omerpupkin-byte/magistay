@@ -14,7 +14,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { bookablePlatforms } from './affiliateLinks.js';
-import { saveClick } from './store.js';
+import { saveClick, cacheGet, cacheSet } from './store.js';
 
 // Sites a /go link may lead to.
 const BOOKING_SITES = ['booking.com', 'agoda.com', 'expedia.com', 'hotels.com', 'trip.com'];
@@ -133,3 +133,26 @@ export function clickStats() {
 }
 
 export function newSearchId() { return randomBytes(4).toString('hex'); }
+
+// ── Short links, for chat ─────────────────────────────────────
+// A /go link carries its whole destination, which is fine behind a button
+// but is 600 characters in a chat message. shorten() keeps the same link
+// under a short code (<api>/go/Ab3xK9q) for 30 days.
+const SHORT_TTL = 30 * 24 * 60 * 60 * 1000;
+
+export async function shorten(link) {
+  try {
+    const u = new URL(link);
+    if (u.pathname !== '/go' || !u.searchParams.get('to')) return link;
+    const code = randomBytes(6).toString('base64url');
+    await cacheSet('go|' + code, u.search.slice(1), SHORT_TTL);
+    return `${u.origin}/go/${code}`;
+  } catch { return link; }
+}
+
+// The query a short code stands for, or null when unknown or expired.
+export async function expand(code) {
+  if (!/^[\w-]{6,12}$/.test(String(code))) return null;
+  const query = await cacheGet('go|' + code);
+  return typeof query === 'string' ? Object.fromEntries(new URLSearchParams(query)) : null;
+}

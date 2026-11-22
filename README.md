@@ -42,6 +42,18 @@ The response says which one was used in `meta.source`, and the page tells the tr
 - Cost: 1 SerpApi search per hotel shown (2 for an ambiguous name), cached 20 minutes.
 - The buttons still open OUR affiliate links (a search for the hotel on the platform), so the price on arrival can differ slightly.
 
+## Guest reviews as evidence
+
+`src/services/reviewEvidence.js`. When the traveller has wishes the hotel data cannot answer (a quiet room, blackout curtains), the reviews of the top hotels are read (Google Hotels Reviews via SerpApi, kept 14 days per hotel) and Claude says, per wish, whether guests support it (`likely`), complain about it (`concern`), disagree (`mixed`) or do not mention it. A quote is shown only if those exact words are in a review that was read. Evidence never becomes "confirmed", and can change the order of the hotels.
+
+## The conversation
+
+`src/services/chatEngine.js` is the matcher as a chat: `chatTurn({ sessionId, message, channel })`. Claude reads each message against what is already known about the trip; the engine asks for one missing thing at a time (place, dates), asks once what matters, then searches and answers with the best three, in the traveller's language. "Cheaper", "with a pool" and questions about a hotel continue the same conversation.
+
+- `POST /api/chat` and the simulator page at `/chat` (`src/routes/chat.js`)
+- WhatsApp: `src/routes/whatsapp.js`, webhook at `/wa/webhook` (see `.env.example`)
+- Chat links are short: `/go/<code>`, kept 30 days.
+
 ## Cost control
 
 `/health` shows `usage`: paid lookups, lookups the cache avoided, Claude tokens and an estimated cost per search. Each check report (`/api/search/check/<n>?...`) shows what that one search cost.

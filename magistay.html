@@ -1467,11 +1467,17 @@ function buildHotelCard(h,idx){
     yes:    {icon:'✓', color:'#1a7a1a', label:''},
     likely: {icon:'~', color:'#B25000', label:'likely — confirm with the hotel'},
     no:     {icon:'✕', color:'#B22020', label:'not available'},
+    concern:{icon:'!', color:'#B22020', label:'guests raise this as a problem'},
+    mixed:  {icon:'±', color:'#B25000', label:'guests disagree'},
     unknown:{icon:'?', color:'#8E8E93', label:'not confirmed — ask the hotel'}
   };
   var needs=(h.needsCheck||[]).map(function(n){
     var m=MARK[n.status]||MARK.unknown;
     var note=n.note||m.label;
+    // What guests wrote, in their words, when reviews are the evidence.
+    if(n.evidence==='reviews'){
+      note=(n.note||m.label)+(n.quote?' — “'+n.quote+'”':'')+' ('+(n.mentions||1)+' guest review'+((n.mentions||1)===1?'':'s')+')';
+    }
     return '<div class="rev-item" style="font-size:13px;">'+
       '<span style="flex-shrink:0;width:16px;font-weight:700;color:'+m.color+'">'+m.icon+'</span>'+
       '<span><span style="color:var(--black);font-weight:500;">'+esc(n.need)+'</span>'+

@@ -115,7 +115,7 @@ Rules about facts — these matter more than anything else:
 
 The traveller's own words: if they contain specific wishes that are not in the needs list (for example "quiet room", "blackout curtains", "walk to the beach"), turn them into at most 3 short wish labels and use the SAME labels for every hotel. For each wish say whether this hotel's description or review themes support it ("likely") or the data is silent ("unknown"). Never "yes": nothing here proves a wish. If there are no such wishes, "wishes" is an empty array.
 
-Return ONLY valid JSON, no prose around it:
+${quiz.language && !/^en/i.test(quiz.language) ? `Write matchReason, every note, every wish label and every highlight in this language: ${quiz.language}. Keep each "need" name exactly as given.\n\n` : ''}Return ONLY valid JSON, no prose around it:
 {
   "matches": [
     {

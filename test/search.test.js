@@ -783,3 +783,239 @@ test('the same hotel and trip is paid for once, however many travellers ask', as
     assert.equal(paid, 2, 'other dates are another price');
   });
 });
+
+// ── Review evidence ───────────────────────────────────────────
+import { addReviewEvidence, openPoints, applyEvidence, buildEvidencePrompt } from '../src/services/reviewEvidence.js';
+import { chatTurn, mergeTrip, hotelMessage, buildUnderstandPrompt } from '../src/services/chatEngine.js';
+import { incoming, signedByMeta, send as waSend } from '../src/routes/whatsapp.js';
+import { createHmac } from 'node:crypto';
+
+const evHotel = (n, score, extra = {}) => ({
+  id: 'google-T' + n, googleToken: 'T' + n, name: 'Hotel ' + n, matchScore: score, currency: 'EUR',
+  needsCheck: [{ need: 'Pool', status: 'yes' }, { need: 'Spa', status: 'unknown' },
+               { need: 'Quiet room', status: 'unknown', fromFreeText: true }, { need: 'Blackout curtains', status: 'unknown', fromFreeText: true }],
+  ...extra,
+});
+const reviewsOf = { T1: [
+    { rating: 5, best_rating: 5, date: 'a month ago', source: 'Google', snippet: 'Slept like a baby, the room was wonderfully quiet even though it is central. Curtains kept the room pitch dark until noon.' },
+    { rating: 4, best_rating: 5, snippet: 'Great breakfast and friendly staff. Rooms are silent at night, we heard nothing from the street.', attributes: [{ name: 'Rooms', snippet: 'Big bed' }] },
+    { rating: 5, best_rating: 5 } ],
+  T2: [ { rating: 2, best_rating: 5, snippet: 'Thin walls, we heard the bar downstairs until 3am every night. Could not sleep at all, very noisy hotel.' },
+        { rating: 3, best_rating: 5, snippet: 'Nice location but street noise is a real problem on the lower floors, bring earplugs.' } ] };
+
+test('review evidence: reviews answer the wishes the data could not', async () => {
+  _clearLivePriceCache();
+  const calls = [];
+  const fetchJson = async (p) => { calls.push(p); return { reviews: reviewsOf[p.property_token] || [] }; };
+  let prompt = '';
+  const ask = async (pr) => { prompt = pr; return { hotels: [
+    { id: 2, points: [
+      { point: 'Quiet room', verdict: 'supported', mentions: 2, note: 'Guests say rooms are quiet at night.', quote: 'the room was wonderfully quiet' },
+      { point: 'Blackout curtains', verdict: 'supported', mentions: 1, note: 'Curtains keep the room dark.', quote: 'curtains kept the room pitch dark' },
+      { point: 'Pool', verdict: 'contradicted', mentions: 1, note: 'No pool.', quote: 'x' },
+      { point: 'Spa', verdict: 'silent', mentions: 0 } ] },
+    { id: 1, points: [
+      { point: 'Quiet room', verdict: 'contradicted', mentions: 2, note: 'Guests complain about noise from the bar.', quote: 'this exact sentence is not in any review' },
+      { point: 'Blackout curtains', verdict: 'supported', mentions: 3, quote: 'made up words here' } ] },
+  ] }; };
+
+  const out = await addReviewEvidence([evHotel(2, 90), evHotel(1, 88)], madrid, { fetchJson, ask });
+  assert.deepEqual(calls.map(c => [c.engine, c.property_token]), [['google_hotels_reviews', 'T2'], ['google_hotels_reviews', 'T1']]);
+  assert.match(prompt, /POINTS TO CHECK:\n1\. Quiet room\n2\. Blackout curtains\n3\. Spa/, 'wishes first, then open needs; confirmed needs are not asked about');
+  assert.match(prompt, /Thin walls/);
+
+  assert.deepEqual(out.map(h => h.name), ['Hotel 1', 'Hotel 2'], 'guests confirm the wish at one and complain at the other: the order flips');
+  const one = Object.fromEntries(out[0].needsCheck.map(n => [n.need, n]));
+  assert.equal(one['Quiet room'].status, 'likely');
+  assert.equal(one['Quiet room'].quote, 'the room was wonderfully quiet');
+  assert.equal(one['Quiet room'].mentions, 2);
+  assert.equal(one['Blackout curtains'].status, 'likely');
+  assert.equal(one['Pool'].status, 'yes', "the hotel's own data is not overruled by a review verdict");
+  assert.equal(one['Spa'].status, 'unknown');
+  assert.equal(out[0].matchScore, 94);
+  assert.equal(out[0].reviewEvidence.reviewsRead, 2, 'the bare star rating is not a review to read');
+
+  const two = Object.fromEntries(out[1].needsCheck.map(n => [n.need, n]));
+  assert.equal(two['Quiet room'].status, 'concern');
+  assert.equal(two['Quiet room'].quote, undefined, 'a quote that is not in the reviews is never shown');
+  assert.match(two['Quiet room'].note, /noise/);
+  assert.equal(two['Blackout curtains'].status, 'unknown', 'no note and an invented quote: not evidence');
+  assert.equal(out[1].matchScore, 82);
+
+  // Second traveller, same hotels: the reviews are not bought again.
+  await addReviewEvidence([evHotel(1, 88)], madrid, { fetchJson, ask });
+  assert.equal(calls.length, 2);
+});
+
+test('review evidence: nothing open, nothing spent; failures change nothing', async () => {
+  _clearLivePriceCache();
+  let called = 0;
+  const fetchJson = async () => { called++; return { reviews: [] }; };
+  const settled = [{ ...evHotel(1, 80), needsCheck: [{ need: 'Pool', status: 'yes' }] }];
+  assert.deepEqual(await addReviewEvidence(settled, madrid, { fetchJson, ask: async () => ({}) }), settled);
+  assert.equal(called, 0);
+  assert.deepEqual(openPoints(settled), []);
+
+  const h = [evHotel(1, 80)];
+  assert.deepEqual(await addReviewEvidence(h, madrid, { fetchJson: async () => { throw new Error('quota'); }, ask: async () => ({}) }), h);
+  assert.deepEqual(await addReviewEvidence(h, madrid, { fetchJson: async (p) => ({ reviews: reviewsOf.T1 }), ask: async () => { throw new Error('down'); } }), h);
+  assert.match(buildEvidencePrompt(h, [[]], ['Quiet room'], 'he'), /Write every "note" in this language: he/);
+});
+
+// ── The conversation ──────────────────────────────────────────
+const fakeSearch = (log) => async (trip, ctx) => {
+  log.push({ trip: JSON.parse(JSON.stringify(trip)), ctx });
+  return { meta: { searchId: 's1' }, hotels: [
+    { name: 'Hotel Uno', stars: 4, riScore: 9.2, currency: 'EUR', matchScore: 92, matchReason: 'שקט ומרכזי.',
+      needsCheck: [{ need: 'Pool', status: 'yes' }, { need: 'Quiet room', status: 'likely', evidence: 'reviews', quote: 'wonderfully quiet', note: 'x' }, { need: 'Spa', status: 'unknown' }],
+      platforms: { agoda: { price: 190 }, bookingCom: { price: 205 }, expedia: { price: 200 } },
+      affiliateLinks: { agoda: 'https://api.x/go?to=a', bookingCom: 'https://api.x/go?to=b' },
+      bestPrice: { platform: 'agoda', price: 190 }, livePrices: { cheaperElsewhere: { seller: 'Trip.com', price: 180 } },
+      photos: { main: { url: 'https://img.x/1.jpg' } } },
+    { name: 'Hotel Dos', currency: 'EUR', needsCheck: [], platforms: {}, affiliateLinks: {}, bestPrice: { platform: 'google', price: 150 } },
+  ] };
+};
+
+test('chat: one message with everything goes straight to a search, in the traveller\'s language', async () => {
+  _clearLivePriceCache();
+  const searches = [], interim = [];
+  const ask = async () => ({ intent: 'trip', language: 'he', destination: 'Madrid', checkIn: '2026-11-24', checkOut: '2026-11-27',
+    destinationLabel: 'מדריד', adults: 2, addPriorities: ['Pool', 'Not A Real One'], wishes: 'quiet room, blackout curtains', reply: 'מעולה!' });
+  const r = await chatTurn({ sessionId: 'abc12345', message: 'זוג למדריד 24-27 בנובמבר, מלון שקט עם בריכה ווילונות האפלה', channel: 'wa', baseUrl: 'https://api.x' },
+    { ask, search: fakeSearch(searches), today: '2026-11-16', onInterim: (t) => interim.push(t) });
+
+  assert.equal(searches.length, 1);
+  assert.deepEqual(searches[0].trip.priorities, ['Pool'], 'only priorities we know how to check');
+  assert.equal(searches[0].trip.freeText, 'quiet room, blackout curtains');
+  assert.equal(searches[0].trip.destination, 'Madrid', 'the search itself uses the English name');
+  assert.deepEqual(searches[0].ctx, { baseUrl: 'https://api.x', channel: 'wa', language: 'he' });
+  assert.match(interim[0], /מחפש מלונות במדריד, 24\.11 עד 27\.11, ל-2 מבוגרים\./);
+  assert.equal(r.messages.length, 3, 'two hotels and the closing line; the "searching" line went out on its own');
+  const m = r.messages[0];
+  assert.equal(m.type, 'hotel');
+  assert.equal(m.image, 'https://img.x/1.jpg');
+  assert.match(m.text, /^1\. \*Hotel Uno\* ★★★★ · 9\.2\/10\nשקט ומרכזי\./);
+  assert.match(m.text, /✓ Pool\n~ Quiet room "wonderfully quiet"/);
+  assert.match(m.text, /\? לא אומת: Spa/);
+  assert.match(m.text, /החל מ- €190 ללילה ב- Agoda\nגם: Booking\.com €205/, 'Expedia has a price but no link of ours: not offered');
+  assert.match(m.text, /נראה זול יותר ב- Trip\.com: €180/);
+  assert.match(m.text, /להזמנה: https:\/\/api\.x\/go\?to=a$/);
+  assert.match(r.messages[1].text, /€150 ללילה \(מחיר משוער\)/);
+  assert.equal(r.searched, true);
+});
+
+test('chat: asks for one missing thing at a time, asks about preferences once, then refines', async () => {
+  _clearLivePriceCache();
+  const searches = [];
+  const script = [
+    { intent: 'trip', language: 'en', destination: 'Lisbon', reply: 'Lisbon, lovely. When are you going?' },
+    { intent: 'trip', language: 'en', checkIn: '2026-12-05', reply: 'Got it.' },
+    { intent: 'trip', language: 'en', checkOut: '2026-12-08', reply: 'Thanks.' },
+    { intent: 'trip', language: 'en', reply: 'Sure.' },
+    { intent: 'refine', language: 'en', budget: '80_150', addPriorities: ['Pool'], reply: 'Looking for cheaper.' },
+    { intent: 'question', language: 'en', reply: 'Hotel Uno is the one guests call quiet.' },
+    { intent: 'reset', language: 'en' },
+  ];
+  let i = 0; const prompts = [];
+  const deps = { ask: async (p) => { prompts.push(p); return script[i++]; }, search: fakeSearch(searches), today: '2026-11-16' };
+  const say = (message) => chatTurn({ sessionId: 'flow-123456', message }, deps);
+
+  assert.equal((await say('Lisbon')).messages[0].text, 'Lisbon, lovely. When are you going?');
+  assert.equal((await say('from dec 5')).messages[0].text, 'And when do you check out?', 'the model did not ask, so we do');
+  const third = await say('until the 8th');
+  assert.match(third.messages[0].text, /Lisbon, 5\.12 to 8\.12\. What matters most to you/);
+  assert.equal(searches.length, 0, 'nothing known about preferences: ask once before spending a search');
+  const fourth = await say('nothing special');
+  assert.equal(searches.length, 1, 'asked once; now search whatever the answer');
+  assert.match(fourth.messages[0].text, /for 2 adults \(tell me if that is wrong\)/);
+  assert.equal(searches[0].trip.adults, 2);
+
+  await say('something cheaper with a pool');
+  assert.equal(searches.length, 2);
+  assert.equal(searches[1].trip.budget, '80_150');
+  assert.deepEqual(searches[1].trip.priorities, ['Pool']);
+  assert.match(prompts[4], /HOTELS ALREADY SHOWN:\n1\. Hotel Uno \(190 EUR\/night\)/, 'the model sees what was shown');
+
+  const q = await say('which one is quiet?');
+  assert.equal(searches.length, 2, 'a question does not search again');
+  assert.equal(q.messages[0].text, 'Hotel Uno is the one guests call quiet.');
+
+  await say('start over');
+  const fresh = await chatTurn({ sessionId: 'flow-123456', message: '' }, deps);
+  assert.equal(fresh.trip.destination, '');
+});
+
+test('chat: bad values never reach the trip', () => {
+  const trip = { destination: 'Rome', destinationLabel: 'רומא', landmark: 'Colosseum', checkIn: '', checkOut: '', adults: null, children: 0, childAges: [], infants: 0, rooms: 1, budget: 'any', stars: 0, priorities: ['Spa'], freeText: '' };
+  mergeTrip(trip, { destination: 'Paris', checkIn: '2020-01-01', checkOut: 'soon', adults: 40, budget: 'free', stars: 9, addPriorities: ['Pool', '<script>'], removePriorities: ['Spa'], wishes: 'x'.repeat(500) }, '2026-11-16');
+  assert.equal(trip.destination, 'Paris');
+  assert.equal(trip.landmark, '', 'a new place drops the old landmark');
+  assert.equal(trip.checkIn, '', 'a date in the past is refused');
+  assert.equal(trip.checkOut, '');
+  assert.equal(trip.adults, null);
+  assert.equal(trip.budget, 'any');
+  assert.equal(trip.stars, 0);
+  assert.deepEqual(trip.priorities, ['Pool']);
+  assert.equal(trip.freeText.length, 200);
+  mergeTrip(trip, { checkIn: '2026-12-10', checkOut: '2026-12-09' }, '2026-11-16');
+  assert.equal(trip.checkIn, '2026-12-10');
+  assert.equal(trip.checkOut, '', 'check-out before check-in is refused');
+  mergeTrip(trip, { checkOut: '2027-03-01' }, '2026-11-16');
+  assert.equal(trip.checkOut, '', 'more than 30 nights is refused');
+  assert.match(buildUnderstandPrompt({ trip, lastResults: [], history: [] }, 'hi', '2026-11-16'), /Today is 2026-11-16/);
+});
+
+// ── WhatsApp ──────────────────────────────────────────────────
+test('whatsapp: reads Meta\'s webhook, checks its signature, sends a hotel as a photo with caption', async () => {
+  const body = { entry: [{ changes: [{ value: { messages: [
+    { from: '972501234567', id: 'wamid.1', type: 'text', text: { body: 'מדריד בסוף נובמבר' } },
+    { from: '972501234567', id: 'wamid.2', type: 'image', image: {} },
+    { from: '972501234567', id: 'wamid.3', type: 'interactive', interactive: { button_reply: { title: 'Cheaper' } } },
+  ], statuses: [{ id: 'x' }] } }] }] };
+  assert.deepEqual(incoming(body).map(m => [m.id, m.text]), [['wamid.1', 'מדריד בסוף נובמבר'], ['wamid.2', null], ['wamid.3', 'Cheaper']]);
+  assert.deepEqual(incoming({ entry: [{ changes: [{ value: { statuses: [{}] } }] }] }), [], 'delivery receipts are not messages');
+
+  await withEnv({ WHATSAPP_APP_SECRET: 'shh' }, async () => {
+    const raw = Buffer.from(JSON.stringify(body));
+    const sig = 'sha256=' + createHmac('sha256', 'shh').update(raw).digest('hex');
+    const req = (s, b = raw) => ({ rawBody: b, get: () => s });
+    assert.equal(signedByMeta(req(sig)), true);
+    assert.equal(signedByMeta(req(sig, Buffer.from('tampered'))), false);
+    assert.equal(signedByMeta(req('sha256=00')), false);
+    assert.equal(signedByMeta(req('')), false);
+  });
+
+  await withEnv({ WHATSAPP_TOKEN: 'tok', WHATSAPP_PHONE_ID: '111', WHATSAPP_API_VERSION: null }, async () => {
+    const sent = [];
+    const ok = (status) => ({ ok: status < 300, status, text: async () => '' });
+    let refuseImage = false;
+    const fetchImpl = async (url, opt) => { const b = JSON.parse(opt.body); sent.push({ url, auth: opt.headers.Authorization, b }); return ok(refuseImage && b.type === 'image' ? 400 : 200); };
+    await waSend('972501234567', { type: 'hotel', text: '1. *Hotel Uno*', image: 'https://img.x/1.jpg' }, { fetchImpl });
+    assert.equal(sent[0].url, 'https://graph.facebook.com/v21.0/111/messages');
+    assert.equal(sent[0].auth, 'Bearer tok');
+    assert.deepEqual(sent[0].b, { messaging_product: 'whatsapp', to: '972501234567', type: 'image', image: { link: 'https://img.x/1.jpg', caption: '1. *Hotel Uno*' } });
+    await waSend('972501234567', { type: 'text', text: 'hello' }, { fetchImpl });
+    assert.equal(sent[1].b.type, 'text');
+    refuseImage = true;
+    assert.equal(await waSend('972501234567', { type: 'hotel', text: 'x', image: 'https://img.x/bad.jpg' }, { fetchImpl }), true);
+    assert.deepEqual(sent.slice(2).map(s => s.b.type), ['image', 'text'], 'a refused photo falls back to text');
+  });
+  assert.equal(await waSend('1', { type: 'text', text: 'x' }), false, 'not configured: nothing is sent');
+});
+
+test('chat links are short, and a short link still lands on the stamped booking page', async () => {
+  const { shorten, expand } = await import('../src/services/clickLinks.js');
+  _clearLivePriceCache();
+  const long = trackedLink('https://api.example', 'https://www.agoda.com/partners/partnersearch.aspx?pcs=1&hid=777&cid=1966785', { platform: 'agoda', hotel: 'Hotel Uno', searchId: 'ab12', channel: 'wa', price: 190, currency: 'EUR' });
+  const short = await shorten(long);
+  assert.match(short, /^https:\/\/api\.example\/go\/[\w-]{8}$/);
+  const r = resolveClick(await expand(short.split('/').pop()));
+  assert.equal(r.click.platform, 'agoda');
+  assert.equal(r.click.channel, 'wa');
+  assert.match(new URL(r.url).searchParams.get('tag'), /^wa-ab12-/);
+  assert.equal(await expand('nosuchcode'), null);
+  assert.equal(await expand('../../etc'), null);
+  assert.equal(await shorten('https://www.agoda.com/x'), 'https://www.agoda.com/x', 'only our own /go links are shortened');
+  const rules = hotelMessage({ name: 'H', matchReason: 'Confirmed for your trip: Pool.', matchedBy: 'rules', needsCheck: [], platforms: {}, affiliateLinks: {} }, 0, 'he');
+  assert.ok(!rules.text.includes('Confirmed'), 'a fixed English sentence is not dropped into a Hebrew chat');
+});
