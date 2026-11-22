@@ -1019,3 +1019,12 @@ test('chat links are short, and a short link still lands on the stamped booking 
   const rules = hotelMessage({ name: 'H', matchReason: 'Confirmed for your trip: Pool.', matchedBy: 'rules', needsCheck: [], platforms: {}, affiliateLinks: {} }, 0, 'he');
   assert.ok(!rules.text.includes('Confirmed'), 'a fixed English sentence is not dropped into a Hebrew chat');
 });
+
+test('each step can run on its own model; the default is Haiku 5.5', async () => {
+  const { modelFor, claudeModel } = await import('../src/services/claude.js');
+  await withEnv({ ANTHROPIC_MODEL: null, ANTHROPIC_MODEL_MATCH: 'claude-sonnet-5-5', ANTHROPIC_MODEL_CHAT: 'not a model; rm -rf' }, async () => {
+    assert.equal(modelFor('match'), 'claude-sonnet-5-5');
+    assert.equal(modelFor('reviews'), claudeModel());
+    assert.equal(modelFor('chat'), claudeModel(), 'a malformed value is ignored');
+  });
+});

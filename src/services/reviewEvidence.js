@@ -56,7 +56,7 @@ export async function addReviewEvidence(hotels, quiz, { fetchJson = serpApiFetch
     if (read.every(r => r.length === 0)) return hotels.concat(rest);
 
     // 2. One question to Claude for all hotels and all open points.
-    const answer = await ask(buildEvidencePrompt(hotels, read, points, quiz.language), { maxTokens: 220 * hotels.length * Math.min(points.length, 3) + 300 });
+    const answer = await ask(buildEvidencePrompt(hotels, read, points, quiz.language), { maxTokens: 220 * hotels.length * Math.min(points.length, 3) + 300, step: 'reviews' });
     const byId = new Map((answer?.hotels || []).map(x => [String(x.id), x]));
 
     // 3. Fold the evidence into each hotel's checklist.

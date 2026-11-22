@@ -11,8 +11,8 @@ export function count(name, n = 1) { counters[name] = (counters[name] || 0) + n;
 // Prices used for the estimate. Override to match the plan you are on.
 const price = () => ({
   serpapiCall:   Number(process.env.SERPAPI_COST_PER_CALL) || 0.015,           // $75 / 5,000 searches
-  claudeInPerM:  Number(process.env.CLAUDE_COST_IN_PER_M)  || 1,               // Haiku 4.5, $ per million tokens
-  claudeOutPerM: Number(process.env.CLAUDE_COST_OUT_PER_M) || 5,
+  claudeInPerM:  Number(process.env.CLAUDE_COST_IN_PER_M)  || 0.10,            // Haiku 5.5, $ per million tokens (prompts up to 100K)
+  claudeOutPerM: Number(process.env.CLAUDE_COST_OUT_PER_M) || 0.50,
 });
 
 export function usageSnapshot() {

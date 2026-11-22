@@ -56,7 +56,7 @@ export async function chatTurn({ sessionId, message, channel = 'web', baseUrl = 
   // 1. Understand.
   let read;
   try {
-    read = await ask(buildUnderstandPrompt(state, text, deps.today || today()), { maxTokens: 500 });
+    read = await ask(buildUnderstandPrompt(state, text, deps.today || today()), { maxTokens: 500, step: 'chat' });
   } catch (e) {
     console.error('[CHAT] understanding failed:', String(e?.message || e).slice(0, 160));
     return finish(key, state, [t(state.language, 'unavailable')]);

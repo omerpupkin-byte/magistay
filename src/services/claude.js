@@ -8,8 +8,16 @@ import { count } from './usage.js';
 
 // The matcher runs while a traveller waits, so the default is the fastest
 // model. ANTHROPIC_MODEL overrides it (e.g. a larger model for quality tests).
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5';
+const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-5-5';
 export function claudeModel() { return MODEL; }
+
+// One step can run on a different model without touching the others, e.g.
+// ANTHROPIC_MODEL_MATCH=claude-sonnet-5-5 to test ranking quality.
+// Steps: match, reviews, chat.
+export function modelFor(step) {
+  const v = process.env['ANTHROPIC_MODEL_' + String(step || '').toUpperCase()];
+  return typeof v === 'string' && /^claude-[\w.-]+$/.test(v.trim()) ? v.trim() : MODEL;
+}
 
 let client = null;
 // The key as it should be sent: a pasted key often arrives with a space,
@@ -45,12 +53,12 @@ export function claudeKeyShape() {
 
 // Sends one prompt, returns the parsed JSON object from the reply.
 // Throws if Claude is not configured, the call fails, or the reply is not JSON.
-export async function askClaudeJSON(prompt, { maxTokens = 2048 } = {}) {
+export async function askClaudeJSON(prompt, { maxTokens = 2048, step = null } = {}) {
   const c = getClient();
   if (!c) throw new Error('ANTHROPIC_API_KEY not set');
 
   const message = await c.messages.create({
-    model:      MODEL,
+    model:      modelFor(step),
     max_tokens: maxTokens,
     messages:   [{ role: 'user', content: prompt }],
   });
