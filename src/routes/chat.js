@@ -11,6 +11,8 @@
 import { Router } from 'express';
 import { chatTurn, reviewMessages } from '../services/chatEngine.js';
 import { addReviewEvidence, reviewEvidenceEnabled, openPoints } from '../services/reviewEvidence.js';
+import { narratives } from '../services/narratives.js';
+import { cacheGet } from '../services/store.js';
 import { runSearch, context } from './search.js';
 import { shorten } from '../services/clickLinks.js';
 
@@ -39,7 +41,36 @@ export async function reviewsForChat(hotels, trip, lang) {
   const before = new Map(hotels.map(h => [h.id, JSON.stringify(h.needsCheck || [])]));
   const judged = await addReviewEvidence(hotels, { ...trip, language: lang });
   const changed = judged.filter(h => before.get(h.id) !== JSON.stringify(h.needsCheck || []) && h.reviewEvidence?.points > 0);
-  return reviewMessages(changed, lang, { none: had });
+  const msgs = reviewMessages(changed, lang, { none: had });
+  // What guests keep coming back to, for each hotel shown (the recent ones count for more).
+  const repeat = await narrativeMessage(hotels, lang);
+  return repeat ? [...msgs, repeat] : msgs;
+}
+
+// Recurring themes from the stored reviews, one short block per hotel.
+async function narrativeMessage(hotels, lang) {
+  const he = lang === 'he';
+  const blocks = [];
+  for (const h of hotels) {
+    if (!h.googleToken) continue;
+    const texts = await cacheGet('reviews|' + h.googleToken);
+    if (!Array.isArray(texts) || texts.length < 4) continue;
+    const top = narratives(texts).slice(0, 3);
+    if (!top.length) continue;
+    const lines = top.map(n => {
+      const recent = n.recentShare != null ? (he ? ` · ${n.recentShare}% מהשנה האחרונה` : ` · ${n.recentShare}% in the last year`) : '';
+      return `• ${n.theme}: ${n.mentions} מתוך ${n.outOf}, ${stanceHe(n.stance, he)}${recent}`.replace(/^• /, '• ');
+    });
+    blocks.push(`*${h.name}*\n${lines.join('\n')}`);
+  }
+  if (!blocks.length) return null;
+  const head = he ? 'מה אורחים חוזרים אליו:' : 'What guests keep coming back to:';
+  return { type: 'text', text: `${head}\n\n${blocks.join('\n\n')}` };
+}
+
+function stanceHe(stance, he) {
+  if (!he) return stance;
+  return { 'mostly positive': 'בעיקר חיובי', 'mostly negative': 'בעיקר שלילי', 'mixed': 'מעורב' }[stance] || stance;
 }
 
 export function turn(req, { sessionId, message, channel }, extra = {}) {

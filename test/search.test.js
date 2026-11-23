@@ -788,6 +788,9 @@ test('the same hotel and trip is paid for once, however many travellers ask', as
 // ── Review evidence ───────────────────────────────────────────
 import { addReviewEvidence, openPoints, applyEvidence, buildEvidencePrompt } from '../src/services/reviewEvidence.js';
 import { chatTurn, mergeTrip, hotelMessage, buildUnderstandPrompt } from '../src/services/chatEngine.js';
+import { nextQuestion, applyAnswer, pickOptions, SITE, siteOptionCovered, QUESTIONS, questionText } from '../src/services/questions.js';
+import { STRINGS as STRINGS_FOR_TEST } from '../src/services/chatEngine.js';
+import { narratives, monthsAgo } from '../src/services/narratives.js';
 import { incoming, signedByMeta, send as waSend } from '../src/routes/whatsapp.js';
 import { createHmac } from 'node:crypto';
 
@@ -884,68 +887,101 @@ test('chat: one message with everything goes straight to a search, in the travel
   const searches = [], interim = [];
   const ask = async () => ({ intent: 'trip', language: 'he', destination: 'Madrid', checkIn: '2026-11-24', checkOut: '2026-11-27',
     destinationLabel: 'מדריד', adults: 2, addPriorities: ['Pool', 'Not A Real One'], wishes: 'quiet room, blackout curtains', reply: 'מעולה!' });
-  const r = await chatTurn({ sessionId: 'abc12345', message: 'זוג למדריד 24-27 בנובמבר, מלון שקט עם בריכה ווילונות האפלה', channel: 'wa', baseUrl: 'https://api.x' },
-    { ask, search: fakeSearch(searches), today: '2026-11-16', onInterim: (t) => interim.push(t) });
+  const deps39 = { ask, search: fakeSearch(searches), today: '2026-11-16', onInterim: (t) => interim.push(t) };
+  const q1 = await chatTurn({ sessionId: 'abc12345', message: 'זוג למדריד 24-27 בנובמבר, מלון שקט עם בריכה ווילונות האפלה', channel: 'wa', baseUrl: 'https://api.x' }, deps39);
+  assert.equal(searches.length, 0, 'a question comes before the search');
+  assert.match(q1.messages[0].text, /כמה חדרים/, 'the first question is the rooms');
+  const r = await chatTurn({ sessionId: 'abc12345', message: 'חפש', channel: 'wa', baseUrl: 'https://api.x' }, deps39);
 
   assert.equal(searches.length, 1);
   assert.deepEqual(searches[0].trip.priorities, ['Pool'], 'only priorities we know how to check');
   assert.equal(searches[0].trip.freeText, 'quiet room, blackout curtains');
   assert.equal(searches[0].trip.destination, 'Madrid', 'the search itself uses the English name');
   assert.deepEqual(searches[0].ctx, { baseUrl: 'https://api.x', channel: 'wa', language: 'he' });
-  assert.match(interim[0], /מחפש מלונות במדריד, 24\.11 עד 27\.11, ל-2 מבוגרים\./);
+  assert.match(interim[0], /בודק זמינות ומחירים בזמן אמת במדריד, 24\.11 עד 27\.11, ל-2 מבוגרים\./);
   assert.equal(r.messages.length, 3, 'two hotels and the closing line; the "searching" line went out on its own');
   const m = r.messages[0];
   assert.equal(m.type, 'hotel');
   assert.equal(m.image, 'https://img.x/1.jpg');
   assert.match(m.text, /^1\. \*Hotel Uno\* ★★★★ · 9\.2\/10\nשקט ומרכזי\./);
   assert.match(m.text, /✓ Pool\n~ Quiet room "wonderfully quiet"/);
-  assert.match(m.text, /\? לא אומת: Spa/);
+  assert.match(m.text, /\? עדיין לא אומת: Spa/);
   assert.match(m.text, /החל מ- €190 ללילה ב- Agoda\nגם: Booking\.com €205/, 'Expedia has a price but no link of ours: not offered');
-  assert.match(m.text, /נראה זול יותר ב- Trip\.com: €180/);
+  assert.ok(!m.text.includes('Trip.com: €180'), 'a seller we cannot send them to is not mentioned');
   assert.match(m.text, /להזמנה: https:\/\/api\.x\/go\?to=a$/);
   assert.match(r.messages[1].text, /€150 ללילה \(מחיר משוער\)/);
   assert.equal(r.searched, true);
 });
 
-test('chat: asks for one missing thing at a time, asks about preferences once, then refines', async () => {
+test('chat: asks the questionnaire one question at a time, and "search" skips the rest', async () => {
   _clearLivePriceCache();
   const searches = [];
   const script = [
     { intent: 'trip', language: 'en', destination: 'Lisbon', reply: 'Lisbon, lovely. When are you going?' },
-    { intent: 'trip', language: 'en', checkIn: '2026-12-05', reply: 'Got it.' },
-    { intent: 'trip', language: 'en', checkOut: '2026-12-08', reply: 'Thanks.' },
-    { intent: 'trip', language: 'en', reply: 'Sure.' },
-    { intent: 'refine', language: 'en', budget: '80_150', addPriorities: ['Pool'], reply: 'Looking for cheaper.' },
+    { intent: 'trip', language: 'en', checkIn: '2026-12-05', checkOut: '2026-12-08', reply: 'Got it.' },
+    { intent: 'smalltalk', language: 'en', reply: 'two' },
+    { intent: 'smalltalk', language: 'en', reply: 'search now' },
     { intent: 'question', language: 'en', reply: 'Hotel Uno is the one guests call quiet.' },
     { intent: 'reset', language: 'en' },
   ];
-  let i = 0; const prompts = [];
-  const deps = { ask: async (p) => { prompts.push(p); return script[i++]; }, search: fakeSearch(searches), today: '2026-11-16' };
+  let i = 0;
+  const deps = { ask: async () => script[i++], search: fakeSearch(searches), today: '2026-11-16' };
   const say = (message) => chatTurn({ sessionId: 'flow-123456', message }, deps);
 
   assert.equal((await say('Lisbon')).messages[0].text, 'Lisbon, lovely. When are you going?');
-  assert.equal((await say('from dec 5')).messages[0].text, 'And when do you check out?', 'the model did not ask, so we do');
-  const third = await say('until the 8th');
-  assert.match(third.messages[0].text, /Lisbon, 5\.12 to 8\.12\. What matters most to you/);
-  assert.equal(searches.length, 0, 'nothing known about preferences: ask once before spending a search');
-  const fourth = await say('nothing special');
-  assert.equal(searches.length, 1, 'asked once; now search whatever the answer');
-  assert.match(fourth.messages[0].text, /for 2 adults \(tell me if that is wrong\)/);
-  assert.equal(searches[0].trip.adults, 2);
+  const dates = await say('dec 5 to 8');
+  assert.match(dates.messages[0].text, /How many rooms/, 'the first question once the place and dates are known');
+  assert.equal(searches.length, 0, 'no search before the questions are answered or skipped');
 
-  await say('something cheaper with a pool');
-  assert.equal(searches.length, 2);
-  assert.equal(searches[1].trip.budget, '80_150');
-  assert.deepEqual(searches[1].trip.priorities, ['Pool']);
-  assert.match(prompts[4], /HOTELS ALREADY SHOWN:\n1\. Hotel Uno \(190 EUR\/night\)/, 'the model sees what was shown');
+  const rooms = await say('שניים');
+  assert.equal(rooms.trip.rooms, 1, 'the model gave no room count, so it is still the default');
+  assert.equal(searches.length, 0);
+
+  const skipped = await say('חפש');
+  assert.equal(searches.length, 1, '"search" skips the rest and searches');
+  assert.equal(skipped.hotels, 2, 'the stand-in search returns two hotels');
 
   const q = await say('which one is quiet?');
-  assert.equal(searches.length, 2, 'a question does not search again');
+  assert.equal(searches.length, 1, 'a question does not search again');
   assert.equal(q.messages[0].text, 'Hotel Uno is the one guests call quiet.');
+});
 
-  await say('start over');
-  const fresh = await chatTurn({ sessionId: 'flow-123456', message: '' }, deps);
-  assert.equal(fresh.trip.destination, '');
+test('chat: a family with a baby is asked about the cot; a wheelchair adds the lift', () => {
+  const t = { children: 1, infants: 0, childAges: [], adults: 2, priorities: [], budget: 'any', cancellation: 'any' };
+  assert.equal(nextQuestion(t, new Set()).id, 'ages', 'children present, ages unknown');
+  assert.equal(nextQuestion(t, new Set(['ages'])).id, 'rooms');
+  t.childAges = [1];
+  const baby = nextQuestion(t, new Set(['ages', 'rooms', 'purpose']));
+  assert.equal(baby.id, 'babies');
+  applyAnswer(t, baby, ['Crib / cot available']);
+  assert.ok(t.priorities.includes('Crib / cot available'));
+  const access = nextQuestion(t, new Set(['ages', 'rooms', 'purpose', 'babies']));
+  assert.equal(access.id, 'access');
+  applyAnswer(t, access, ['Wheelchair accessible', 'No stairs (elevator required)']);
+  assert.ok(t.priorities.includes('Wheelchair accessible') && t.priorities.includes('Elevator'));
+  assert.deepEqual(pickOptions({ kind: 'single', options: ['כן', 'לא', 'לא בטוח'] }, 'כן, צריך ביטול'), ['כן']);
+  assert.deepEqual(pickOptions({ kind: 'multi', options: ['בריכת ילדים', 'מועדון ילדים'] }, 'בריכת ילדים בבקשה'), ['בריכת ילדים']);
+});
+
+test('reviews: recurring narratives, with how recent they are', () => {
+  const revs = [
+    { text: 'The room was quiet, slept well all night.', when: '2 months ago' },
+    { text: 'Quiet at night, no noise from the street.', when: 'a year ago' },
+    { text: 'Street noise until late, thin walls.', when: '3 years ago' },
+    { text: 'Great location, walking distance to everything.', when: 'a month ago' },
+    { text: 'Friendly staff at the desk.', when: '5 months ago' },
+  ];
+  const n = narratives(revs);
+  const quiet = n.find(x => x.theme === 'שקט בלילה');
+  assert.equal(quiet.mentions, 3);
+  assert.equal(quiet.positive, 2);
+  assert.equal(quiet.negative, 1);
+  assert.equal(quiet.stance, 'mostly positive');
+  assert.equal(quiet.recent, 2, 'two of the three are within a year');
+  assert.ok(!n.some(x => x.theme === 'צוות'), 'a single mention is not a narrative');
+  assert.equal(monthsAgo('2 years ago'), 24);
+  assert.equal(monthsAgo('a week ago'), 0.5);
+  assert.equal(monthsAgo('someday'), null);
 });
 
 test('chat: bad values never reach the trip', () => {
@@ -1059,18 +1095,81 @@ test('the chat answers first and follows up with what the reviews say', async ()
     { need: 'שקט בחדר', status: 'likely', evidence: 'reviews', quote: 'quiet and clean', note: 'אורח אחד' },
     { need: 'וילונות האפלה', status: 'concern', evidence: 'reviews', quote: 'light came in all night', note: 'אורחים מתלוננים' }] }];
   const [m] = reviewMessages(changed, 'he');
-  assert.match(m.text, /^בדקתי מה אורחים כותבים/);
+  assert.match(m.text, /^מה אורחים כותבים על מה שחשוב לכם/);
   assert.match(m.text, /\*Palacio\*\n~ שקט בחדר "quiet and clean"/);
   assert.match(m.text, /! וילונות האפלה "light came in all night"/);
   assert.ok(!m.text.includes('Pool'), 'the data-confirmed need is not repeated');
   assert.deepEqual(reviewMessages([], 'en'), []);
-  assert.equal(reviewMessages([], 'en', { none: true })[0].text, 'I found no guest reviews that speak to what you asked about.');
+  assert.equal(reviewMessages([], 'en', { none: true })[0].text, "Guest reviews don't speak to what you asked about, so ask the hotel directly.");
 
   // The first answer goes out without waiting; the follow-up is offered.
   const searches = [];
   const ask = async () => ({ intent: 'trip', language: 'en', destination: 'Madrid', checkIn: '2026-11-24', checkOut: '2026-11-27', adults: 2, wishes: 'quiet room', reply: 'ok' });
   const search = async (trip) => { searches.push(trip); return { meta: {}, hotels: [{ id: 'h1', name: 'Hotel Uno', matchScore: 90, needsCheck: [{ need: 'Quiet room', status: 'unknown', fromFreeText: true }], platforms: {}, affiliateLinks: {} }] }; };
-  const r = await chatTurn({ sessionId: 'follow-123456', message: 'madrid' }, { ask, search, reviews: async () => [{ type: 'text', text: 'later' }], today: '2026-11-16' });
+  const deps47 = { ask, search, reviews: async () => [{ type: 'text', text: 'later' }], today: '2026-11-16' };
+  await chatTurn({ sessionId: 'follow-123456', message: 'madrid' }, deps47);
+  const r = await chatTurn({ sessionId: 'follow-123456', message: 'חפש' }, deps47);
   assert.equal(typeof r.followUp, 'function');
   assert.deepEqual(await r.followUp(), [{ type: 'text', text: 'later' }]);
+});
+
+test('the questionnaire covers every option the website offers', () => {
+  const missing = [];
+  for (const [group, list] of Object.entries(SITE)) for (const opt of list) if (!siteOptionCovered(opt)) missing.push(`${group}: ${opt}`);
+  assert.deepEqual(missing, [], 'every website option is asked somewhere');
+  // Each must-have and each accessibility, baby, sleep, dining and other option changes the search.
+  const q = (id) => QUESTIONS.find(x => x.id === id);
+  const t = { children: 0, childAges: [], infants: 0, priorities: [], freeText: '', budget: 'any', stars: 0 };
+  applyAnswer(t, q('must'), ['Pool', 'Free cancellation', 'Quiet area']);
+  assert.ok(t.priorities.includes('Pool') && t.priorities.includes('Free cancellation'));
+  assert.ok(t.freeText.includes('quiet area'), 'a wish the data cannot check goes to the reviews');
+  assert.equal(t.cancellation, 'free');
+  applyAnswer(t, q('stars'), [4]);
+  assert.equal(t.stars, 4);
+  applyAnswer(t, q('budget'), ['80_150']);
+  assert.equal(t.budget, '80_150');
+  applyAnswer(t, q('rooms'), [2]);
+  assert.equal(t.rooms, 2);
+});
+
+test('the questions only appear when the answers make them relevant', () => {
+  const adults = { children: 0, childAges: [], infants: 0, budget: 'any', stars: 0 };
+  assert.ok(!nextQuestion(adults, new Set(['rooms', 'purpose'])) || nextQuestion(adults, new Set(['rooms', 'purpose'])).id !== 'babies');
+  const family = { children: 2, childAges: [1, 8], infants: 0, budget: 'any', stars: 0 };
+  assert.equal(QUESTIONS.find(x => x.id === 'babies').when(family), true, 'a child under three');
+  assert.equal(QUESTIONS.find(x => x.id === 'kids').when(family), false, 'a baby in the group: the baby questions come instead');
+  assert.equal(QUESTIONS.find(x => x.id === 'babies').when({ ...family, childAges: [5, 8] }), false);
+  assert.equal(QUESTIONS.find(x => x.id === 'kids').when({ ...family, childAges: [5, 8] }), true);
+});
+
+test('the questionnaire reads the same in both languages, with the same options', () => {
+  // Every question has both languages, and both are the same question.
+  for (const q of QUESTIONS) {
+    assert.ok(q.text.en && q.text.he, `${q.id} has both languages`);
+    const en = questionText(q, 'en'), he = questionText(q, 'he');
+    const n = (x) => x.split('\n').length;
+    assert.equal(n(en), n(he), `${q.id} has the same number of lines in both languages`);
+  }
+  // The same numbers pick the same answers in both languages.
+  const rooms = QUESTIONS.find(x => x.id === 'rooms');
+  assert.deepEqual(pickOptions(rooms, '2', 'en'), [2]);
+  assert.deepEqual(pickOptions(rooms, 'שניים', 'he'), [], 'a word that is not an option picks nothing');
+  assert.deepEqual(pickOptions(rooms, '3 or more', 'en'), [3]);
+  assert.deepEqual(pickOptions(rooms, '3 ומעלה', 'he'), [3]);
+  const must = QUESTIONS.find(x => x.id === 'must');
+  assert.deepEqual(pickOptions(must, 'Pool and Free cancellation', 'en'), ['Pool', 'Free cancellation']);
+  assert.deepEqual(pickOptions(must, 'בריכה וביטול חינם', 'he'), ['Pool', 'Free cancellation']);
+  assert.deepEqual(pickOptions(must, '1 and 4', 'en'), ['Walkable location', 'Free cancellation'], 'numbers pick by position');
+  const access = QUESTIONS.find(x => x.id === 'access');
+  assert.deepEqual(pickOptions(access, 'none', 'en'), []);
+  assert.deepEqual(pickOptions(access, 'אין', 'he'), []);
+  // Stars and budget keep their values whatever the language.
+  const stars = QUESTIONS.find(x => x.id === 'stars');
+  assert.deepEqual(pickOptions(stars, '5 כוכבים', 'he'), [5]);
+  assert.deepEqual(pickOptions(stars, '5 stars', 'en'), [5]);
+});
+
+test('every reply the chat sends exists in both languages', () => {
+  const en = STRINGS_FOR_TEST.en, he = STRINGS_FOR_TEST.he;
+  assert.deepEqual(Object.keys(en).sort(), Object.keys(he).sort(), 'same keys in English and Hebrew');
 });

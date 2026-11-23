@@ -20,12 +20,14 @@
 // What we know is kept per session in the shared store (24 hours).
 
 import { askClaudeJSON, hasClaude } from './claude.js';
+import { nextQuestion, applyAnswer, pickOptions, questionText } from './questions.js';
 import { cacheGet, cacheSet } from './store.js';
 import { count } from './usage.js';
 
 const SESSION_TTL = 24 * 60 * 60 * 1000;
 const MAX_MESSAGE = 700;
-const SHOW        = 3;          // hotels per answer in a chat
+const SHOW        = 3;
+const MAX_QUESTIONS = 12;  // the website's whole questionnaire at most; "search" at any point skips the rest          // hotels per answer in a chat
 
 const BUDGETS    = ['u80', '80_150', '150_250', '250plus', 'any'];
 const PRIORITIES = ['Pool', 'Spa', 'Breakfast included', 'Free cancellation', 'Parking', 'Rooftop', 'Beach access',
@@ -35,7 +37,7 @@ const PRIORITIES = ['Pool', 'Spa', 'Breakfast included', 'Free cancellation', 'P
 function emptyState() {
   return { trip: { destination: '', destinationLabel: '', landmark: '', checkIn: '', checkOut: '', adults: null, children: 0, childAges: [], infants: 0,
                    rooms: 1, budget: 'any', stars: 0, priorities: [], freeText: '' },
-           language: 'en', askedPreferences: false, lastResults: [], turns: 0, history: [] };
+           language: 'en', askedPreferences: false, asked: [], questionsAsked: 0, pendingQ: null, lastResults: [], turns: 0, history: [] };
 }
 
 // ── Public: one turn ──────────────────────────────────────────
@@ -77,7 +79,8 @@ export async function chatTurn({ sessionId, message, channel = 'web', baseUrl = 
 
   // A question about a hotel we already showed, or small talk: the model's
   // reply is the answer; no search.
-  if ((read?.intent === 'question' || read?.intent === 'smalltalk') && !changed) {
+  // While a question is waiting, a short answer must reach it, whatever the model calls it.
+  if ((read?.intent === 'question' || read?.intent === 'smalltalk') && !changed && !state.pendingQ) {
     return finish(key, state, [clean(read.reply) || t(lang, 'hello')]);
   }
 
@@ -86,11 +89,24 @@ export async function chatTurn({ sessionId, message, channel = 'web', baseUrl = 
   if (!trip.destination) return finish(key, state, [clean(read?.reply) || t(lang, 'askWhere')]);
   if (!trip.checkIn || !trip.checkOut) return finish(key, state, [missingDatesReply(read, lang, trip)]);
 
-  // 3. What matters to them: asked once, and only if they said nothing.
-  const said = trip.priorities.length > 0 || !!trip.freeText || trip.budget !== 'any' || trip.stars > 0;
-  if (!said && !state.askedPreferences && !/^(search|go|חפש|תחפש|לא|no|nothing|כלום|אין)$/i.test(text)) {
-    state.askedPreferences = true;
-    return finish(key, state, [t(lang, 'askWhat', trip)]);
+  // 3. Questions that depend on the answers so far. One at a time; an answer
+  //    to the last one is read first. At most MAX_QUESTIONS per conversation;
+  //    "search" at any point skips the rest.
+  const SEARCH_NOW = /^(search|go|find|find them|show me|now|skip|חפש|תחפש|חפשו|מספיק|בוא נחפש|שלח|דלג|עכשיו)$/i;
+  if (state.pendingQ) {
+    const q = state.pendingQ;
+    state.pendingQ = null;
+    const picked = SEARCH_NOW.test(text) ? [] : pickOptions(q, text, lang);
+    if (picked.length) applyAnswer(trip, q, q.kind === 'text' ? [text] : picked);
+    if (q.kind === 'text') { const ages = (text.match(/\d+/g) || []).map(Number).filter(n => n <= 17); if (ages.length) trip.childAges = ages; }
+  }
+  // Questions come before the first search only; afterwards the traveller is refining.
+  if (!state.searches && !SEARCH_NOW.test(text) && state.questionsAsked < MAX_QUESTIONS) {
+    const q = nextQuestion(trip, new Set(state.asked));
+    if (q) {
+      state.asked.push(q.id); state.questionsAsked++; state.pendingQ = q;
+      return finish(key, state, [questionText(q, lang)]);
+    }
   }
   state.askedPreferences = true;
 
@@ -122,6 +138,7 @@ export async function chatTurn({ sessionId, message, channel = 'web', baseUrl = 
   const followUp = deps.reviews && hotels.length && wishes
     ? () => deps.reviews(hotels, { ...trip, adults: trip.adults || 2 }, lang)
     : null;
+  state.searches = (state.searches || 0) + 1;
   return finish(key, state, messages, { searched: true, hotels: hotels.length, searchId: found?.meta?.searchId || null, followUp });
 }
 
@@ -259,7 +276,8 @@ export function hotelMessage(h, i, lang) {
     const rest = priced.slice(1, 4).map(k => `${SITE[k]} ${cur}${h.platforms[k].price}`).join(' · ');
     lines.push(`${L.from} ${cur}${h.platforms[best].price} ${L.perNight} ${L.on} ${SITE[best]}${rest ? `\n${L.also}: ${rest}` : ''}`);
     const else_ = h.livePrices?.cheaperElsewhere;
-    if (else_) lines.push(`${L.cheaperAt} ${else_.official ? L.hotelSite : else_.seller}: ${cur}${else_.price}`);
+    // Only the hotel's own site is mentioned as cheaper (see livePrices.js).
+    if (else_ && else_.official) lines.push(`${L.cheaperAt} ${L.hotelSite}: ${cur}${else_.price}`);
     lines.push(`${L.book}: ${h.affiliateLinks[best]}`);
   } else if (h.bestPrice?.price) {
     lines.push(`${L.from} ${cur}${h.bestPrice.price} ${L.perNight} (${L.indicative})`);
@@ -272,38 +290,38 @@ export function hotelMessage(h, i, lang) {
 // ── Fixed phrases ─────────────────────────────────────────────
 // Hebrew and English; any other language falls back to English for
 // these (the model's own replies are already in the traveller's language).
-const STRINGS = {
+export const STRINGS = {
   en: {
-    hello: 'Hi! Tell me where you are going, when, and what matters to you in a hotel. One message is enough.',
-    reset: 'Starting fresh. Where to, and when?',
-    unavailable: 'I cannot search right now. Please try again in a few minutes.',
-    askWhere: 'Where would you like to go?',
-    askWhen: (x) => `When are you going to ${x.destination}? Check-in and check-out dates, please.`,
-    askCheckout: 'And when do you check out?',
-    askWhat: (x) => `${x.destination}, ${fmt(x.checkIn)} to ${fmt(x.checkOut)}. What matters most to you: a quiet room, a pool, the location, a budget? Or just say "search".`,
-    searching: (x) => `Looking for hotels in ${x.destination}, ${fmt(x.checkIn)} to ${fmt(x.checkOut)}, for ${x.adults} adult${x.adults === 1 ? '' : 's'}${x.assumedAdults ? ' (tell me if that is wrong)' : ''}. About 20 seconds...`,
-    searchFailed: 'Something went wrong with that search. Please try again.',
-    nothing: (x) => `I found no hotels I can stand behind in ${x.destination} for those dates. Try other dates or a wider area?`,
-    after: 'Want something different? Say "cheaper", "closer to the centre", "with a pool", or ask about one of them.',
-    from: 'From', perNight: 'per night', on: 'on', also: 'Also', book: 'Book', indicative: 'indicative',
-    notConfirmed: 'Not confirmed', cheaperAt: 'Cheaper seen at', hotelSite: "the hotel's own site",
-    reviewsIntro: 'I checked what guests write about what matters to you:', reviewsNone: 'I found no guest reviews that speak to what you asked about.',
+    hello: "Hi! Tell me where, when, and who's coming, and I'll do the rest. Your perfect hotel is a few short questions away.",
+    reset: "Let's start fresh. Where would you like to go, and when?",
+    unavailable: "I can't search right now. Please try again in a few minutes.",
+    askWhere: "Where are you dreaming of going?",
+    askWhen: (x) => `Great choice: ${x.destination}! When are you going? Check-in and check-out, please.`,
+    askCheckout: "And when do you check out?",
+    askWhat: (x) => `${x.destination}, ${fmt(x.checkIn)} to ${fmt(x.checkOut)}. Tell me what matters, or say "search" and we start now.`,
+    searching: (x) => `On it! Checking live availability and prices for ${x.destination}, ${fmt(x.checkIn)} to ${fmt(x.checkOut)}, for ${x.adults} adult${x.adults === 1 ? '' : 's'}${x.assumedAdults ? ' (tell me if that is wrong)' : ''}. About 20 seconds...`,
+    searchFailed: "Something went wrong on our side. Please try again in a moment.",
+    nothing: (x) => `No hotel I can stand behind in ${x.destination} for those dates. Try other dates, or a wider area?`,
+    after: 'Want something different? Say "cheaper", "closer to the centre", "with a pool", or ask about any of them.',
+    from: 'From', perNight: 'per night', on: 'on', also: 'Also', book: 'Book now', indicative: 'indicative',
+    notConfirmed: 'Not confirmed yet', cheaperAt: 'Lower price at', hotelSite: "the hotel's own site",
+    reviewsIntro: 'Here is what guests write about what matters to you:', reviewsNone: "Guest reviews don't speak to what you asked about, so ask the hotel directly.",
   },
   he: {
-    hello: 'היי! ספרו לי לאן אתם נוסעים, מתי, ומה חשוב לכם במלון. הודעה אחת מספיקה.',
-    reset: 'מתחילים מחדש. לאן, ומתי?',
-    unavailable: 'אני לא מצליח לחפש כרגע. נסו שוב בעוד כמה דקות.',
-    askWhere: 'לאן תרצו לנסוע?',
-    askWhen: (x) => `מתי אתם נוסעים ל${x.destination}? תאריכי הגעה ועזיבה, בבקשה.`,
-    askCheckout: 'ומתי אתם עוזבים?',
-    askWhat: (x) => `${x.destination}, ${fmt(x.checkIn)} עד ${fmt(x.checkOut)}. מה הכי חשוב לכם: חדר שקט, בריכה, מיקום, תקציב? או פשוט כתבו "חפש".`,
-    searching: (x) => `מחפש מלונות ב${x.destination}, ${fmt(x.checkIn)} עד ${fmt(x.checkOut)}, ל-${x.adults} מבוגרים${x.assumedAdults ? ' (תקנו אותי אם זה לא נכון)' : ''}. כ-20 שניות...`,
-    searchFailed: 'משהו השתבש בחיפוש. נסו שוב.',
-    nothing: (x) => `לא מצאתי מלונות שאני יכול לעמוד מאחוריהם ב${x.destination} בתאריכים האלה. ננסה תאריכים אחרים או אזור רחב יותר?`,
+    hello: 'היי! ספרו לי לאן, מתי, ומי נוסע, ואני עושה את השאר. המלון המושלם הוא עוד כמה שאלות קצרות.',
+    reset: 'מתחילים מחדש! לאן תרצו לנסוע, ומתי?',
+    unavailable: 'אני לא יכול לחפש כרגע. נסו שוב בעוד כמה דקות.',
+    askWhere: 'לאן אתם חולמים לנסוע?',
+    askWhen: (x) => `בחירה מעולה: ${x.destination}! מתי נוסעים? תאריכי הגעה ועזיבה, בבקשה.`,
+    askCheckout: 'ומתי עוזבים?',
+    askWhat: (x) => `${x.destination}, ${fmt(x.checkIn)} עד ${fmt(x.checkOut)}. ספרו לי מה חשוב, או כתבו "חפש" ונתחיל עכשיו.`,
+    searching: (x) => `מתחילים! בודק זמינות ומחירים בזמן אמת ב${x.destination}, ${fmt(x.checkIn)} עד ${fmt(x.checkOut)}, ל-${x.adults} מבוגרים${x.assumedAdults ? ' (תקנו אותי אם זה לא נכון)' : ''}. כ-20 שניות...`,
+    searchFailed: 'משהו השתבש מצדנו. נסו שוב בעוד רגע.',
+    nothing: (x) => `לא מצאתי מלון שאני יכול לעמוד מאחוריו ב${x.destination} בתאריכים האלה. נסו תאריכים אחרים, או אזור רחב יותר?`,
     after: 'רוצים משהו אחר? כתבו "זול יותר", "קרוב יותר למרכז", "עם בריכה", או שאלו על אחד מהם.',
     from: 'החל מ-', perNight: 'ללילה', on: 'ב-', also: 'גם', book: 'להזמנה', indicative: 'מחיר משוער',
-    notConfirmed: 'לא אומת', cheaperAt: 'נראה זול יותר ב-', hotelSite: 'אתר המלון',
-    reviewsIntro: 'בדקתי מה אורחים כותבים על מה שחשוב לכם:', reviewsNone: 'לא מצאתי ביקורות אורחים שמתייחסות למה שביקשתם.',
+    notConfirmed: 'עדיין לא אומת', cheaperAt: 'מחיר נמוך יותר ב-', hotelSite: 'אתר המלון',
+    reviewsIntro: 'מה אורחים כותבים על מה שחשוב לכם:', reviewsNone: 'ביקורות האורחים לא מדברות על מה שביקשתם, כדאי לשאול את המלון ישירות.',
   },
 };
 
