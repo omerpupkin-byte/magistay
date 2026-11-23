@@ -103,6 +103,9 @@ const CHOICES = {
   ],
 };
 
+// A yes/no gate: the answer decides whether its detailed group is asked.
+export const YESNO = { yes: { en: ['yes', 'y', 'sure', 'yeah'], he: ['כן', 'בטח', 'יש', 'צריך'] }, no: { en: ['no', 'nope', 'nothing'], he: ['לא', 'אין'] } };
+
 const MULTI_HINT = { en: 'Pick as many as you like, or say "next" to skip.', he: 'אפשר כמה, או "הבא" לדלג.' };
 const NONE_WORD  = { en: /(^|\s)(none|no|nothing)(\s|$|[.,!])/i, he: /(^|\s)(אין|לא)(\s|$|[.,!])/i };
 const young = (t) => (t.childAges || []).some(a => a < 3) || (t.infants || 0) > 0;
@@ -113,11 +116,12 @@ export const QUESTIONS = [
   { id: 'ages', kind: 'text', when: t => (t.children || 0) > 0 && (t.childAges || []).length < (t.children || 0),
     text: { en: 'How old is each child? (under 2 counts as 0 or 1)', he: 'כמה שנים לכל ילד? (תינוק מתחת לשנתיים: 0 או 1)' } },
 
-  { id: 'rooms', kind: 'single', when: () => true, choices: CHOICES.rooms,
+  // Two adults with a child usually share one room; ask only when one room is unlikely.
+  { id: 'rooms', kind: 'single', when: t => !t.roomsSet && ((t.adults || 0) >= 3 || (t.adults || 0) + (t.children || 0) + (t.infants || 0) >= 5), choices: CHOICES.rooms,
     text: { en: 'How many rooms do you need?', he: 'כמה חדרים צריך?' },
     apply: (v) => ({ rooms: v[0] }) },
 
-  { id: 'purpose', kind: 'multi', when: () => true, options: SITE.purpose, single: true,
+  { id: 'purpose', kind: 'multi', when: t => !(t.purpose && t.purpose.length), options: SITE.purpose, single: true,
     text: { en: 'What kind of trip is it?', he: 'איזה סוג נסיעה זו?' },
     apply: (v) => ({ purpose: v }) },
 
@@ -129,8 +133,11 @@ export const QUESTIONS = [
     text: { en: 'What will the kids enjoy?', he: 'מה הילדים יאהבו?' },
     apply: (v) => fromMeans(v) },
 
-  { id: 'access', kind: 'multi', when: () => true, options: SITE.access, none: true,
-    text: { en: 'Does anyone need accessibility?', he: 'האם מישהו בקבוצה זקוק להתאמות נגישות?' },
+  { id: 'access_gate', kind: 'yesno', when: () => true,
+    text: { en: 'Does anyone in the group need accessibility help?', he: 'האם מישהו בקבוצה זקוק להתאמות נגישות?' },
+    gate: 'access' },
+  { id: 'access', kind: 'multi', when: t => t.answers?.access_gate === 'yes', options: SITE.access, none: true,
+    text: { en: 'What do they need?', he: 'מה צריך?' },
     apply: (v) => fromMeans(v) },
 
   { id: 'must', kind: 'multi', when: () => true, options: SITE.mustHaves,
@@ -149,16 +156,25 @@ export const QUESTIONS = [
     text: { en: 'What kind of holiday vibe?', he: 'איזה סגנון חופשה?' },
     apply: (v) => ({ vibes: v }) },
 
-  { id: 'sleep', kind: 'multi', when: () => true, options: SITE.sleep, none: true,
-    text: { en: 'Sleep and room comfort?', he: 'שינה ונוחות בחדר?' },
+  { id: 'sleep_gate', kind: 'yesno', when: () => true,
+    text: { en: 'Do you care about sleep and room details (blackout, quiet rooms, pillows)?', he: 'חשוב לכם שינה ופרטים בחדר (וילונות, שקט, כריות)?' },
+    gate: 'sleep' },
+  { id: 'sleep', kind: 'multi', when: t => t.answers?.sleep_gate === 'yes', options: SITE.sleep, none: true,
+    text: { en: 'Which of these?', he: 'מאלה, מה חשוב?' },
     apply: (v) => fromMeans(v) },
 
-  { id: 'dining', kind: 'multi', when: () => true, options: SITE.dining, none: true,
-    text: { en: 'Food and dining?', he: 'אוכל והעדפות?' },
+  { id: 'dining_gate', kind: 'yesno', when: () => true,
+    text: { en: 'Any food needs (diet, kosher, halal, room service)?', he: 'יש צרכים באוכל (כשרות, צמחוני, חלאל, שירות חדרים)?' },
+    gate: 'dining' },
+  { id: 'dining', kind: 'multi', when: t => t.answers?.dining_gate === 'yes', options: SITE.dining, none: true,
+    text: { en: 'Which food needs?', he: 'אילו צרכים באוכל?' },
     apply: (v) => fromMeans(v) },
 
-  { id: 'other', kind: 'multi', when: () => true, options: SITE.other, none: true,
-    text: { en: 'Anything else that matters?', he: 'עוד דברים שחשובים?' },
+  { id: 'other_gate', kind: 'yesno', when: () => true,
+    text: { en: 'Anything else that matters: a pet, EV charging, fast Wi-Fi, early check-in?', he: 'עוד דברים שחשובים: חיית מחמד, טעינה לרכב, אינטרנט מהיר, צ׳ק-אין מוקדם?' },
+    gate: 'other' },
+  { id: 'other', kind: 'multi', when: t => t.answers?.other_gate === 'yes', options: SITE.other, none: true,
+    text: { en: 'Which of these?', he: 'מאלה, מה רלוונטי?' },
     apply: (v) => fromMeans(v) },
 ];
 
@@ -183,6 +199,7 @@ export function nextQuestion(trip, asked = new Set()) {
 // Apply the traveller's answer to the trip.
 export function applyAnswer(trip, question, picked) {
   if (!question || question.id === 'ages') return trip;
+  if (question.kind === 'yesno') { trip.answers = { ...(trip.answers || {}), [question.id]: picked[0] }; return trip; }
   const change = question.apply ? question.apply(picked) : {};
   if (change.priorities?.length) trip.priorities = [...new Set([...trip.priorities, ...change.priorities])].slice(0, 12);
   if (change.wishes?.length) trip.freeText = [trip.freeText, ...change.wishes].filter(Boolean).join('; ').slice(-400);
@@ -191,11 +208,23 @@ export function applyAnswer(trip, question, picked) {
   return trip;
 }
 
+// A distinctive word of an option is enough ("עריסה" for "עריסה / מיטת תינוק").
+const GENERIC_WORDS = new Set(['של', 'עם', 'או', 'ו', 'ב', 'לא', 'כן', 'על', 'the', 'and', 'with', 'for', 'or', 'a', 'of', 'in', 'on', 'no', 'yes', 'only', 'any', 'more']);
+function anyWord(text, label) {
+  return String(label).toLowerCase().split(/[^\p{L}\p{N}]+/u).some(w => w.length >= 3 && !GENERIC_WORDS.has(w) && text.includes(w));
+}
+
 // Read the answer in either language. Numbers pick by position; the option's
 // own words (English or Hebrew) pick by name; "none" for the optional groups.
 export function pickOptions(question, text, lang = 'en') {
   const t = String(text || '').toLowerCase().trim();
   if (question.kind === 'text') return [String(text || '').trim()];
+  if (question.kind === 'yesno') {
+    const w = (t.match(/[\p{L}]+/gu) || []);
+    if (w.some(x => YESNO.yes.en.includes(x) || YESNO.yes.he.includes(x))) return ['yes'];
+    if (w.some(x => YESNO.no.en.includes(x) || YESNO.no.he.includes(x))) return ['no'];
+    return [];
+  }
   if (question.none && (NONE_WORD.en.test(t) || NONE_WORD.he.test(t))) return [];
 
   if (question.choices) {
@@ -212,7 +241,9 @@ export function pickOptions(question, text, lang = 'en') {
     const hit = options.find(o => t.includes(o.toLowerCase()) || (HE[o] && t.includes(HE[o].toLowerCase())));
     return hit ? [hit] : byNumber.slice(0, 1);
   }
-  const named = options.filter(o => t.includes(o.toLowerCase()) || (HE[o] && t.includes(HE[o].toLowerCase())));
+  // A full name beats a shared word: "בריכת ילדים" is the pool, not the kids club.
+  const full = options.filter(o => t.includes(o.toLowerCase()) || (HE[o] && t.includes(HE[o].toLowerCase())));
+  const named = full.length ? full : options.filter(o => anyWord(t, HE[o] || o));
   return [...new Set([...byNumber, ...named])];
 }
 
@@ -220,6 +251,7 @@ export function pickOptions(question, text, lang = 'en') {
 export function questionText(q, lang = 'en') {
   const L = lang === 'he' ? 'he' : 'en';
   if (q.kind === 'text') return q.text[L];
+  if (q.kind === 'yesno') return `${q.text[L]}\n1. ${L === 'he' ? 'כן' : 'Yes'}\n2. ${L === 'he' ? 'לא' : 'No'}`;
   const items = q.choices ? q.choices.map(c => c[L]) : q.options.map(o => label(o, L));
   const hint = q.kind === 'text' ? '' : q.kind === 'single' || q.single ? (L === 'he' ? '(אפשר לענות במספר או במילים)' : '(answer with a number or the words)') : `(${MULTI_HINT[L]}${q.none ? (L === 'he' ? ' או "אין"' : ' or "none"') : ''})`;
   return `${q.text[L]}\n${items.map((x, i) => `${i + 1}. ${x}`).join('\n')}\n${hint}`;

@@ -890,7 +890,7 @@ test('chat: one message with everything goes straight to a search, in the travel
   const deps39 = { ask, search: fakeSearch(searches), today: '2026-11-16', onInterim: (t) => interim.push(t) };
   const q1 = await chatTurn({ sessionId: 'abc12345', message: 'זוג למדריד 24-27 בנובמבר, מלון שקט עם בריכה ווילונות האפלה', channel: 'wa', baseUrl: 'https://api.x' }, deps39);
   assert.equal(searches.length, 0, 'a question comes before the search');
-  assert.match(q1.messages[0].text, /כמה חדרים/, 'the first question is the rooms');
+  assert.match(q1.messages[0].text, /סוג נסיעה/, 'a couple needs no rooms question; the trip type is asked, since it was not said');
   const r = await chatTurn({ sessionId: 'abc12345', message: 'חפש', channel: 'wa', baseUrl: 'https://api.x' }, deps39);
 
   assert.equal(searches.length, 1);
@@ -930,7 +930,7 @@ test('chat: asks the questionnaire one question at a time, and "search" skips th
 
   assert.equal((await say('Lisbon')).messages[0].text, 'Lisbon, lovely. When are you going?');
   const dates = await say('dec 5 to 8');
-  assert.match(dates.messages[0].text, /How many rooms/, 'the first question once the place and dates are known');
+  assert.match(dates.messages[0].text, /What kind of trip/, 'the first question once the place and dates are known');
   assert.equal(searches.length, 0, 'no search before the questions are answered or skipped');
 
   const rooms = await say('שניים');
@@ -949,15 +949,18 @@ test('chat: asks the questionnaire one question at a time, and "search" skips th
 test('chat: a family with a baby is asked about the cot; a wheelchair adds the lift', () => {
   const t = { children: 1, infants: 0, childAges: [], adults: 2, priorities: [], budget: 'any', cancellation: 'any' };
   assert.equal(nextQuestion(t, new Set()).id, 'ages', 'children present, ages unknown');
-  assert.equal(nextQuestion(t, new Set(['ages'])).id, 'rooms');
+  assert.equal(nextQuestion(t, new Set(['ages'])).id, 'purpose');
   t.childAges = [1];
   const baby = nextQuestion(t, new Set(['ages', 'rooms', 'purpose']));
   assert.equal(baby.id, 'babies');
   applyAnswer(t, baby, ['Crib / cot available']);
   assert.ok(t.priorities.includes('Crib / cot available'));
   const access = nextQuestion(t, new Set(['ages', 'rooms', 'purpose', 'babies']));
-  assert.equal(access.id, 'access');
-  applyAnswer(t, access, ['Wheelchair accessible', 'No stairs (elevator required)']);
+  assert.equal(access.id, 'access_gate', 'a yes/no first: detail only if someone needs it');
+  applyAnswer(t, access, ['yes']);
+  const detail = nextQuestion(t, new Set(['ages', 'rooms', 'purpose', 'babies', 'access_gate']));
+  assert.equal(detail.id, 'access');
+  applyAnswer(t, detail, ['Wheelchair accessible', 'No stairs (elevator required)']);
   assert.ok(t.priorities.includes('Wheelchair accessible') && t.priorities.includes('Elevator'));
   assert.deepEqual(pickOptions({ kind: 'single', options: ['כן', 'לא', 'לא בטוח'] }, 'כן, צריך ביטול'), ['כן']);
   assert.deepEqual(pickOptions({ kind: 'multi', options: ['בריכת ילדים', 'מועדון ילדים'] }, 'בריכת ילדים בבקשה'), ['בריכת ילדים']);

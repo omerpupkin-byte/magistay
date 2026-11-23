@@ -20,19 +20,21 @@
 // What we know is kept per session in the shared store (24 hours).
 
 import { askClaudeJSON, hasClaude } from './claude.js';
-import { nextQuestion, applyAnswer, pickOptions, questionText } from './questions.js';
+import { nextQuestion, applyAnswer, pickOptions, questionText, SITE as SITE_OPTIONS } from './questions.js';
 import { cacheGet, cacheSet } from './store.js';
 import { count } from './usage.js';
 
 const SESSION_TTL = 24 * 60 * 60 * 1000;
 const MAX_MESSAGE = 700;
 const SHOW        = 3;
+const ACKS = {
+  en: ['Nice! ✨', 'Got it, noted 🙌', 'Perfect!', 'Love it 😊', 'Great choice!', 'Noted, thank you!'],
+  he: ['יופי! ✨', 'רשמתי, תודה 🙌', 'מושלם!', 'אהבתי 😊', 'בחירה מעולה!', 'נרשם, תודה!'],
+};
 const MAX_QUESTIONS = 12;  // the website's whole questionnaire at most; "search" at any point skips the rest          // hotels per answer in a chat
 
 const BUDGETS    = ['u80', '80_150', '150_250', '250plus', 'any'];
-const PRIORITIES = ['Pool', 'Spa', 'Breakfast included', 'Free cancellation', 'Parking', 'Rooftop', 'Beach access',
-                    'Sea view', 'Gym', 'Kids pool', 'Crib / cot available', 'Elevator', 'Wheelchair accessible',
-                    'Pet friendly', 'Air conditioning', 'Late check-out', 'Early check-in', 'Airport shuttle', 'Kitchen'];
+const PRIORITIES = [...new Set([...SITE_OPTIONS.mustHaves, ...SITE_OPTIONS.access, ...SITE_OPTIONS.babies, ...SITE_OPTIONS.sleep, ...SITE_OPTIONS.dining, ...SITE_OPTIONS.other, 'Pool', 'Spa', 'Parking', 'Kids pool'])];
 
 function emptyState() {
   return { trip: { destination: '', destinationLabel: '', landmark: '', checkIn: '', checkOut: '', adults: null, children: 0, childAges: [], infants: 0,
@@ -86,6 +88,7 @@ export async function chatTurn({ sessionId, message, channel = 'web', baseUrl = 
 
   // 2. The two things a search cannot do without.
   const trip = state.trip;
+  if (!trip.answers) trip.answers = {};
   if (!trip.destination) return finish(key, state, [clean(read?.reply) || t(lang, 'askWhere')]);
   if (!trip.checkIn || !trip.checkOut) return finish(key, state, [missingDatesReply(read, lang, trip)]);
 
@@ -93,19 +96,21 @@ export async function chatTurn({ sessionId, message, channel = 'web', baseUrl = 
   //    to the last one is read first. At most MAX_QUESTIONS per conversation;
   //    "search" at any point skips the rest.
   const SEARCH_NOW = /^(search|go|find|find them|show me|now|skip|חפש|תחפש|חפשו|מספיק|בוא נחפש|שלח|דלג|עכשיו)$/i;
+  let ack = null;   // a short reaction to the answer, so the questions feel like a conversation
   if (state.pendingQ) {
     const q = state.pendingQ;
     state.pendingQ = null;
     const picked = SEARCH_NOW.test(text) ? [] : pickOptions(q, text, lang);
     if (picked.length) applyAnswer(trip, q, q.kind === 'text' ? [text] : picked);
     if (q.kind === 'text') { const ages = (text.match(/\d+/g) || []).map(Number).filter(n => n <= 17); if (ages.length) trip.childAges = ages; }
+    if (picked.length || q.kind === 'text') ack = ACKS[lang === 'he' ? 'he' : 'en'][(state.turns + state.questionsAsked) % ACKS.en.length];
   }
   // Questions come before the first search only; afterwards the traveller is refining.
   if (!state.searches && !SEARCH_NOW.test(text) && state.questionsAsked < MAX_QUESTIONS) {
     const q = nextQuestion(trip, new Set(state.asked));
     if (q) {
       state.asked.push(q.id); state.questionsAsked++; state.pendingQ = q;
-      return finish(key, state, [questionText(q, lang)]);
+      return finish(key, state, [ack ? `${ack}\n${questionText(q, lang)}` : questionText(q, lang)]);
     }
   }
   state.askedPreferences = true;
@@ -179,7 +184,10 @@ Report only what this message states or changes. Leave out anything it does not 
 - "adults", "children", "infants" (under 2), "childAges", "rooms": numbers. "a couple" is 2 adults.
 - "budget": one of ${BUDGETS.join(', ')} (per night, roughly in euros or dollars). "cheaper" after results means one step lower than now; "luxury" is 250plus.
 - "stars": minimum star class if they ask for one.
-- "addPriorities" / "removePriorities": only from this list: ${PRIORITIES.join(', ')}.
+- "addPriorities" / "removePriorities": only from this list, using these exact words: ${PRIORITIES.join(', ')}. Anything they said that matches one of these, put here and not in wishes.
+- "purpose": one of ${SITE_OPTIONS.purpose.join(', ')}, if they say what kind of trip it is ("couple" = "Couple's getaway", "with kids" = "Family holiday", "honeymoon" = "Honeymoon / anniversary").
+- "vibes": from ${SITE_OPTIONS.vibe.join(', ')}, only if they say what kind of holiday it is.
+- "rooms": the number of rooms, only if they say it.
 - "wishes": anything else that matters to them, in short plain English ("quiet room, blackout curtains, firm mattress"). Only new wishes from this message.
 - "intent": "trip" (gives or changes trip details), "refine" (changes what they want after seeing results), "question" (asks about a hotel shown or how this works), "smalltalk", or "reset" (start over).
 - "language": the language the traveller writes in, as a two-letter code ("he", "en", "es"...).
@@ -215,6 +223,11 @@ export function mergeTrip(trip, read, todayIso) {
   const s = int(read.stars, 2, 5);     if (s != null) trip.stars = s;
 
   const add = (Array.isArray(read.addPriorities) ? read.addPriorities : []).filter(p => PRIORITIES.includes(p));
+  if (SITE_OPTIONS.purpose.includes(read.purpose)) trip.purpose = [read.purpose];
+  // Known options (must-haves, access, sleep...) go through the same reading as the questions.
+  if (Array.isArray(read.vibes)) trip.vibes = read.vibes.filter(v => SITE_OPTIONS.vibe.includes(v)).slice(0, 4);
+  const roomsSaid = Number.isInteger(read.rooms) && read.rooms >= 1 && read.rooms <= 6 ? read.rooms : null;
+  if (roomsSaid) { trip.rooms = roomsSaid; trip.roomsSet = true; }
   const del = new Set(Array.isArray(read.removePriorities) ? read.removePriorities : []);
   trip.priorities = [...new Set([...trip.priorities, ...add])].filter(p => !del.has(p)).slice(0, 8);
 
