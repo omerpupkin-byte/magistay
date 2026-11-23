@@ -56,7 +56,7 @@ export async function addReviewEvidence(hotels, quiz, { fetchJson = serpApiFetch
     if (read.every(r => r.length === 0)) return hotels.concat(rest);
 
     // 2. One question to Claude for all hotels and all open points.
-    const answer = await ask(buildEvidencePrompt(hotels, read, points, quiz.language), { maxTokens: 220 * hotels.length * Math.min(points.length, 3) + 300, step: 'reviews' });
+    const answer = await ask(buildEvidencePrompt(hotels, read, points, quiz.language), { maxTokens: 1500 * hotels.length + 800, step: 'reviews' });
     const byId = new Map((answer?.hotels || []).map(x => [String(x.id), x]));
 
     // 3. Fold the evidence into each hotel's checklist.
@@ -151,6 +151,7 @@ Rules:
 - "mentions" is how many of the reviews above talk about the point.
 - "quote" is up to 12 consecutive words copied exactly from one review, the clearest evidence. Omit it when silent.
 - "note" is one plain sentence of at most 14 words summing up what guests say. Omit it when silent.
+- Keep the whole reply short: no commentary outside the JSON.
 - ${lang}
 
 Reply with JSON only:

@@ -47,7 +47,7 @@ export async function matchHotelsWithAI(quiz, hotels, { limit = MAX_RESULTS } = 
   try {
     console.log(`[AI MATCHER] Calling Claude with ${shortlist.length} candidates...`);
     const started = Date.now();
-    const parsed = await askClaudeJSON(buildMatchPrompt(quiz, shortlist, aiCount), { maxTokens: 450 * aiCount, step: 'match' });
+    const parsed = await askClaudeJSON(buildMatchPrompt(quiz, shortlist, aiCount), { maxTokens: 1400 * aiCount, step: 'match' });
     lastDurationMs = Date.now() - started;
     console.log(`[AI MATCHER] Claude answered in ${lastDurationMs} ms`);
     const ranked = applyAIResult(quiz, shortlist, parsed.matches || []).slice(0, aiCount);
