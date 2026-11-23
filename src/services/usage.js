@@ -28,7 +28,7 @@ export function usageSnapshot() {
     serpapiCalls: c('serpapiCalls'),
     paidLookupsAvoidedByCache: c('listingCacheHits') + c('priceCacheHits'),
     listingCacheHits: c('listingCacheHits'), priceCacheHits: c('priceCacheHits'),
-    claudeCalls: c('claudeCalls'), claudeInputTokens: c('claudeInputTokens'), claudeOutputTokens: c('claudeOutputTokens'),
+    claudeCalls: c('claudeCalls'), claudeFailedCalls: c('claudeFailedCalls'), claudeInputTokens: c('claudeInputTokens'), claudeOutputTokens: c('claudeOutputTokens'),
     estimatedUsd: { serpapi: round(serp), claude: round(claude), total: round(serp + claude),
                     perSearch: searches ? round((serp + claude) / searches) : null },
   };

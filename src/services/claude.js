@@ -53,22 +53,44 @@ export function claudeKeyShape() {
 
 // Sends one prompt, returns the parsed JSON object from the reply.
 // Throws if Claude is not configured, the call fails, or the reply is not JSON.
+// Why the last Claude call failed, for /health. Set for every failure,
+// including those the caller catches and turns into a fallback.
+let lastCallFailure = null;
+export function lastClaudeFailure() { return lastCallFailure; }
+
 export async function askClaudeJSON(prompt, { maxTokens = 2048, step = null } = {}) {
   const c = getClient();
   if (!c) throw new Error('ANTHROPIC_API_KEY not set');
 
-  const message = await c.messages.create({
-    model:      modelFor(step),
-    max_tokens: maxTokens,
-    messages:   [{ role: 'user', content: prompt }],
-  });
+  let message;
+  try {
+    message = await c.messages.create({
+      model:      modelFor(step),
+      max_tokens: maxTokens,
+      messages:   [{ role: 'user', content: prompt }],
+    });
+  } catch (e) {
+    count('claudeFailedCalls');
+    lastCallFailure = { step, at: new Date().toISOString(), kind: 'api',
+      status: e?.status ?? null, message: String(e?.message || e).slice(0, 200) };
+    throw e;
+  }
 
   count('claudeCalls');
   count('claudeInputTokens',  message.usage?.input_tokens  || 0);
   count('claudeOutputTokens', message.usage?.output_tokens || 0);
 
   const raw = (message.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
-  return JSON.parse(extractJSON(raw));
+  const truncated = message.stop_reason === 'max_tokens';
+  try {
+    return JSON.parse(extractJSON(raw));
+  } catch (e) {
+    count('claudeFailedCalls');
+    lastCallFailure = { step, at: new Date().toISOString(), kind: truncated ? 'truncated' : 'unparseable',
+      outputTokens: message.usage?.output_tokens || 0, maxTokens,
+      message: truncated ? `reply cut off at ${maxTokens} tokens` : 'reply was not valid JSON' };
+    throw new Error(lastCallFailure.message);
+  }
 }
 
 export function extractJSON(text) {
