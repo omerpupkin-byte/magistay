@@ -184,8 +184,13 @@ export function applyEvidence(hotel, answer, reviews, points) {
     const note  = typeof p.note === 'string' && p.note.trim() ? p.note.trim().slice(0, 110) : null;
     if (!note && !real) return n;                        // a verdict with nothing to show for it is not evidence
 
+    // One guest is an opinion, not evidence: a verdict needs several reviews behind it.
+    const said = Math.round(Number(p.mentions)) || 0;
+    const needed = p.verdict === 'supported' ? 3 : 2;
+    if (said < needed) return n;
+
     delta += SCORE[p.verdict]; used++;
-    const mentions = Math.max(1, Math.min(reviews.length, Math.round(Number(p.mentions)) || 1));
+    const mentions = Math.min(reviews.length, said);
     return { ...n, status, evidence: 'reviews', mentions,
              ...(note ? { note } : {}), ...(real ? { quote: quote.slice(0, 110) } : {}) };
   });

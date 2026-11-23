@@ -300,7 +300,8 @@ test('live prices replace the indicative price and keep our links', async () => 
   assert.equal(h.platforms.bookingCom.price, 420);
   assert.equal(h.platforms.expedia, undefined, 'no Expedia price on Google → none shown');
   assert.equal(h.platforms.hotelbeds.price, 380, 'supplier rate kept');
-  assert.deepEqual(h.livePrices.cheaperElsewhere, { seller: 'Super.com', price: 390, official: false });
+  assert.equal(h.livePrices.cheaperElsewhere, null, 'other sellers are not mentioned to the traveller');
+  assert.deepEqual(h.livePrices.otherPrices[0], { seller: 'Super.com', price: 390 }, 'they stay in the report');
   assert.equal(h.breakfastPrice, null);
   const agodaLink = new URL(h.affiliateLinks.agoda);
   assert.equal(agodaLink.pathname, '/search', 'no hotel page known: still a search link');
@@ -722,7 +723,7 @@ test('a platform we are not approved for gets no button, only its price', async 
     assert.equal(h.platforms.expedia, undefined);
     assert.deepEqual(h.livePrices.otherPrices, [{ seller: 'Trip.com', price: 180 }, { seller: 'Expedia.com', price: 200 }]);
     assert.equal(h.bestPrice.platform, 'agoda', 'the best price is the best one we can send them to');
-    assert.deepEqual(h.livePrices.cheaperElsewhere, { seller: 'Trip.com', price: 180, official: false }, 'and the page still says where it is cheaper');
+    assert.equal(h.livePrices.cheaperElsewhere, null, 'Trip.com is not ours, so it is not mentioned');
   });
 });
 
@@ -810,8 +811,8 @@ test('review evidence: reviews answer the wishes the data could not', async () =
   let prompt = '';
   const ask = async (pr) => { prompt = pr; return { hotels: [
     { id: 2, points: [
-      { point: 'Quiet room', verdict: 'supported', mentions: 2, note: 'Guests say rooms are quiet at night.', quote: 'the room was wonderfully quiet' },
-      { point: 'Blackout curtains', verdict: 'supported', mentions: 1, note: 'Curtains keep the room dark.', quote: 'curtains kept the room pitch dark' },
+      { point: 'Quiet room', verdict: 'supported', mentions: 3, note: 'Guests say rooms are quiet at night.', quote: 'the room was wonderfully quiet' },
+      { point: 'Blackout curtains', verdict: 'supported', mentions: 3, note: 'Curtains keep the room dark.', quote: 'curtains kept the room pitch dark' },
       { point: 'Pool', verdict: 'contradicted', mentions: 1, note: 'No pool.', quote: 'x' },
       { point: 'Spa', verdict: 'silent', mentions: 0 } ] },
     { id: 1, points: [
@@ -828,8 +829,10 @@ test('review evidence: reviews answer the wishes the data could not', async () =
   const one = Object.fromEntries(out[0].needsCheck.map(n => [n.need, n]));
   assert.equal(one['Quiet room'].status, 'likely');
   assert.equal(one['Quiet room'].quote, 'the room was wonderfully quiet');
-  assert.equal(one['Quiet room'].mentions, 2);
+  assert.equal(one['Quiet room'].mentions, 2, 'capped at the reviews actually read');
   assert.equal(one['Blackout curtains'].status, 'likely');
+  const weak = await addReviewEvidence([evHotel(1, 88)], madrid, { fetchJson, ask: async () => ({ hotels: [{ id: 1, points: [{ point: 'Quiet room', verdict: 'supported', mentions: 1, note: 'one guest', quote: 'the room was wonderfully quiet' }] }] }) });
+  assert.equal(Object.fromEntries(weak[0].needsCheck.map(n => [n.need, n.status]))['Quiet room'], 'unknown', 'one guest is not enough');
   assert.equal(one['Pool'].status, 'yes', "the hotel's own data is not overruled by a review verdict");
   assert.equal(one['Spa'].status, 'unknown');
   assert.equal(out[0].matchScore, 94);
@@ -1046,4 +1049,28 @@ test('a rules-only reserve pick needs something real to show', () => {
   const palace = { matchedBy: 'rules', stars: 5, needsCheck: [] };
   const aiPick = { matchedBy: 'ai', stars: 0, needsCheck: [] };
   assert.deepEqual([loft, palace, aiPick].filter(real), [palace, aiPick]);
+});
+
+test('the chat answers first and follows up with what the reviews say', async () => {
+  _clearLivePriceCache();
+  const { reviewMessages } = await import('../src/services/chatEngine.js');
+  const changed = [{ name: 'Palacio', needsCheck: [
+    { need: 'Pool', status: 'yes' },
+    { need: 'שקט בחדר', status: 'likely', evidence: 'reviews', quote: 'quiet and clean', note: 'אורח אחד' },
+    { need: 'וילונות האפלה', status: 'concern', evidence: 'reviews', quote: 'light came in all night', note: 'אורחים מתלוננים' }] }];
+  const [m] = reviewMessages(changed, 'he');
+  assert.match(m.text, /^בדקתי מה אורחים כותבים/);
+  assert.match(m.text, /\*Palacio\*\n~ שקט בחדר "quiet and clean"/);
+  assert.match(m.text, /! וילונות האפלה "light came in all night"/);
+  assert.ok(!m.text.includes('Pool'), 'the data-confirmed need is not repeated');
+  assert.deepEqual(reviewMessages([], 'en'), []);
+  assert.equal(reviewMessages([], 'en', { none: true })[0].text, 'I found no guest reviews that speak to what you asked about.');
+
+  // The first answer goes out without waiting; the follow-up is offered.
+  const searches = [];
+  const ask = async () => ({ intent: 'trip', language: 'en', destination: 'Madrid', checkIn: '2026-11-24', checkOut: '2026-11-27', adults: 2, wishes: 'quiet room', reply: 'ok' });
+  const search = async (trip) => { searches.push(trip); return { meta: {}, hotels: [{ id: 'h1', name: 'Hotel Uno', matchScore: 90, needsCheck: [{ need: 'Quiet room', status: 'unknown', fromFreeText: true }], platforms: {}, affiliateLinks: {} }] }; };
+  const r = await chatTurn({ sessionId: 'follow-123456', message: 'madrid' }, { ask, search, reviews: async () => [{ type: 'text', text: 'later' }], today: '2026-11-16' });
+  assert.equal(typeof r.followUp, 'function');
+  assert.deepEqual(await r.followUp(), [{ type: 'text', text: 'later' }]);
 });

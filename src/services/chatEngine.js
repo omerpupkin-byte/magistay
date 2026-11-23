@@ -117,7 +117,12 @@ export async function chatTurn({ sessionId, message, channel = 'web', baseUrl = 
     hotels.forEach((h, i) => messages.push(hotelMessage(h, i, lang)));
     messages.push(t(lang, 'after'));
   }
-  return finish(key, state, messages, { searched: true, hotels: hotels.length, searchId: found?.meta?.searchId || null });
+  // The reviews come after the answer, as a follow-up the channel sends when ready.
+  const wishes = hotels.some(h => (h.needsCheck || []).some(n => n.fromFreeText && n.status !== 'yes'));
+  const followUp = deps.reviews && hotels.length && wishes
+    ? () => deps.reviews(hotels, { ...trip, adults: trip.adults || 2 }, lang)
+    : null;
+  return finish(key, state, messages, { searched: true, hotels: hotels.length, searchId: found?.meta?.searchId || null, followUp });
 }
 
 async function finish(key, state, messages, extra = {}) {
@@ -214,6 +219,18 @@ function missingDatesReply(read, lang, trip) {
 const SITE = { bookingCom: 'Booking.com', agoda: 'Agoda', expedia: 'Expedia', hotelsCom: 'Hotels.com', tripCom: 'Trip.com' };
 const ICON = { yes: '✓', likely: '~', concern: '!', mixed: '±', no: '✕', unknown: '?' };
 
+// The review findings, as one message, for the hotels whose checks changed.
+export function reviewMessages(changed, lang, { none = false } = {}) {
+  const L = STRINGS[lang] || STRINGS.en;
+  if (!changed.length) return none ? [{ type: 'text', text: L.reviewsNone }] : [];
+  const blocks = changed.map(h => {
+    const ev = (h.needsCheck || []).filter(n => n.evidence === 'reviews');
+    const lines = ev.map(n => `${ICON[n.status] || '?'} ${n.need}${n.quote ? ` "${n.quote}"` : ''}${n.note ? ` (${n.note})` : ''}`);
+    return `*${h.name}*\n${lines.join('\n')}`;
+  });
+  return [{ type: 'text', text: `${L.reviewsIntro}\n\n${blocks.join('\n\n')}` }];
+}
+
 export function hotelMessage(h, i, lang) {
   const L = STRINGS[lang] || STRINGS.en;
   const cur = h.currency === 'EUR' ? '€' : h.currency === 'USD' ? '$' : h.currency === 'ILS' ? '₪' : (h.currency || '') + ' ';
@@ -270,6 +287,7 @@ const STRINGS = {
     after: 'Want something different? Say "cheaper", "closer to the centre", "with a pool", or ask about one of them.',
     from: 'From', perNight: 'per night', on: 'on', also: 'Also', book: 'Book', indicative: 'indicative',
     notConfirmed: 'Not confirmed', cheaperAt: 'Cheaper seen at', hotelSite: "the hotel's own site",
+    reviewsIntro: 'I checked what guests write about what matters to you:', reviewsNone: 'I found no guest reviews that speak to what you asked about.',
   },
   he: {
     hello: 'היי! ספרו לי לאן אתם נוסעים, מתי, ומה חשוב לכם במלון. הודעה אחת מספיקה.',
@@ -285,6 +303,7 @@ const STRINGS = {
     after: 'רוצים משהו אחר? כתבו "זול יותר", "קרוב יותר למרכז", "עם בריכה", או שאלו על אחד מהם.',
     from: 'החל מ-', perNight: 'ללילה', on: 'ב-', also: 'גם', book: 'להזמנה', indicative: 'מחיר משוער',
     notConfirmed: 'לא אומת', cheaperAt: 'נראה זול יותר ב-', hotelSite: 'אתר המלון',
+    reviewsIntro: 'בדקתי מה אורחים כותבים על מה שחשוב לכם:', reviewsNone: 'לא מצאתי ביקורות אורחים שמתייחסות למה שביקשתם.',
   },
 };
 

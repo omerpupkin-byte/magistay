@@ -297,7 +297,11 @@ export function applyLivePrices(hotel, live, quiz = {}) {
   const reference = [];                 // sellers we know but cannot earn from: price only, no link
   const seen = new Set();
   for (const offer of live.offers) {
-    if (!offer.platform || seen.has(offer.platform)) continue;          // keep the cheapest per platform
+    if (!offer.platform) {                                              // a seller we have no link for: report only
+      reference.push({ seller: offer.seller, price: offer.price });
+      continue;
+    }
+    if (seen.has(offer.platform)) continue;                             // keep the cheapest per platform
     seen.add(offer.platform);
     // Straight to the hotel's page on that platform, with our affiliate id.
     const direct = ours.has(offer.platform) && offer.link ? buildDirectLink(offer.platform, offer.link, quiz, live.currency) : null;
@@ -324,7 +328,7 @@ export function applyLivePrices(hotel, live, quiz = {}) {
     // The cheapest price anywhere, when it is NOT one of our platforms -
     // shown so "lowest" on the page is never a half-truth.
     cheaperElsewhere: null,
-    otherPrices: reference.slice(0, 4),
+    otherPrices: reference.slice(0, 4),   // report only; not shown to travellers
   };
 
   if (tracked.length === 0) {
@@ -334,10 +338,11 @@ export function applyLivePrices(hotel, live, quiz = {}) {
   }
 
   const cheapest = tracked[0];
-  const overall  = live.offers[0];
-  const earnsForUs = overall && tracked.some(t => t.platform === overall.platform);
-  if (overall && !earnsForUs && overall.price < cheapest.price) {
-    livePrices.cheaperElsewhere = { seller: overall.seller, price: overall.price, official: overall.official };
+  // Only the hotel's own site is mentioned as cheaper: a price on a site we cannot
+  // send anyone to is not something the traveller can act on.
+  const overall = live.offers[0];
+  if (overall && !overall.platform && overall.official && overall.price < cheapest.price) {
+    livePrices.cheaperElsewhere = { seller: overall.seller, price: overall.price, official: true };
   }
 
   const flex = tracked.find(o => o.freeCancellation);

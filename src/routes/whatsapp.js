@@ -81,6 +81,11 @@ async function handle(req, msg) {
   const result = await turn(req, { sessionId: 'wa-' + msg.from, message: msg.text, channel: 'wa' },
     { onInterim: (text) => send(msg.from, { type: 'text', text }) });
   for (const m of result.messages) await send(msg.from, m);
+  // The reviews follow once they are read (a few seconds later).
+  if (typeof result.followUp === 'function') {
+    const extra = await result.followUp().catch(e => { console.error('[WHATSAPP] reviews', String(e?.message || e).slice(0, 160)); return []; });
+    for (const m of extra) await send(msg.from, m);
+  }
 }
 
 // One message out. A hotel goes as its photo with the text as caption

@@ -9,7 +9,8 @@
 // WhatsApp uses the same engine through routes/whatsapp.js.
 
 import { Router } from 'express';
-import { chatTurn } from '../services/chatEngine.js';
+import { chatTurn, reviewMessages } from '../services/chatEngine.js';
+import { addReviewEvidence, reviewEvidenceEnabled, openPoints } from '../services/reviewEvidence.js';
 import { runSearch, context } from './search.js';
 import { shorten } from '../services/clickLinks.js';
 
@@ -18,7 +19,8 @@ const router = Router();
 // The real search, in the shape the engine expects.
 export async function searchForChat(trip, ctx) {
   // A chat shows three hotels, so only three are priced and read about.
-  const { status, body } = await runSearch(trip, null, { ...ctx, show: 3 });
+  // The reviews follow the answer (see reviewsForChat), so the search skips them here.
+  const { status, body } = await runSearch(trip, null, { ...ctx, show: 3, skipReviews: true });
   if (status !== 200) throw new Error(body?.error || `search answered ${status}`);
   // Links short enough to sit in a message.
   for (const h of body.hotels || []) {
@@ -29,22 +31,54 @@ export async function searchForChat(trip, ctx) {
   return body;
 }
 
+// The review follow-up: read the reviews for the open points, and say what
+// they found for each hotel whose checks changed.
+export async function reviewsForChat(hotels, trip, lang) {
+  if (!reviewEvidenceEnabled()) return [];
+  const had = openPoints(hotels).length > 0;
+  const before = new Map(hotels.map(h => [h.id, JSON.stringify(h.needsCheck || [])]));
+  const judged = await addReviewEvidence(hotels, { ...trip, language: lang });
+  const changed = judged.filter(h => before.get(h.id) !== JSON.stringify(h.needsCheck || []) && h.reviewEvidence?.points > 0);
+  return reviewMessages(changed, lang, { none: had });
+}
+
 export function turn(req, { sessionId, message, channel }, extra = {}) {
   const ctx = context(req, channel || 'chat');
-  return chatTurn({ sessionId, message, channel: ctx.channel, baseUrl: ctx.baseUrl }, { search: searchForChat, ...extra });
+  return chatTurn({ sessionId, message, channel: ctx.channel, baseUrl: ctx.baseUrl }, { search: searchForChat, reviews: reviewsForChat, ...extra });
 }
 
 router.post('/api/chat', async (req, res, next) => {
   try {
     const { sessionId, message, channel } = req.body || {};
     if (typeof sessionId !== 'string' || sessionId.length < 6) return res.status(400).json({ error: 'sessionId is required' });
-    res.json(await turn(req, { sessionId, message, channel: channel || 'chat' }));
+    const result = await turn(req, { sessionId, message, channel: channel || 'chat' });
+    // The reviews follow when ready: the channel asks for them by this id.
+    if (typeof result.followUp === 'function') {
+      const id = newFollowId();
+      const job = { done: false, messages: [] };
+      follow.set(id, job);
+      result.followUp().then(m => { job.messages = m; }).catch(() => {}).finally(() => { job.done = true; });
+      const { followUp, ...rest } = result;
+      res.json({ ...rest, followUpId: id });
+    } else {
+      const { followUp, ...rest } = result;
+      res.json(rest);
+    }
   } catch (err) { next(err); }
 });
 
 // A turn that searches takes longer than a simple page fetch waits, so
 // this address answers within a few seconds: with the reply, or with
 // "running" and where to read it.
+const follow = new Map();
+const newFollowId = () => Math.random().toString(36).slice(2, 10);
+router.get('/api/chat/followup/:id', (req, res) => {
+  const job = follow.get(req.params.id);
+  if (!job) return res.status(404).json({ status: 'unknown' });
+  if (!job.done) return res.json({ status: 'running' });
+  res.json({ status: 'done', messages: job.messages });
+});
+
 const jobs = new Map();
 const WAIT_MS = 8000;
 
@@ -61,7 +95,12 @@ router.get('/api/chat/say/:session/:n', async (req, res, next) => {
     const id = `${String(req.params.session).replace(/[^\w-]/g, '').slice(0, 24)}-${String(req.params.n).replace(/\D/g, '').slice(0, 4)}-${Date.now().toString(36)}`;
     const job = { startedAt: Date.now(), done: false };
     job.promise = turn(req, { sessionId: 'check-' + req.params.session, message: String(req.query.m || ''), channel: 'check' })
-      .then(r => { job.result = r; }).catch(e => { job.error = String(e?.message || e).slice(0, 300); })
+      .then(async (r) => {
+        // For checking, the review follow-up is included in the same answer.
+        if (typeof r.followUp === 'function') r.messages = r.messages.concat(await r.followUp().catch(() => []));
+        delete r.followUp;
+        job.result = r;
+      }).catch(e => { job.error = String(e?.message || e).slice(0, 300); })
       .finally(() => { job.done = true; job.tookMs = Date.now() - job.startedAt; });
     jobs.set(id, job);
     await answer(res, id, job, context(req).baseUrl, 0);
@@ -114,10 +153,12 @@ function add(cls,html){var d=document.createElement('div');d.className='m '+cls;
 function show(m){add('them',(m.image?'<img src="'+esc(m.image)+'" alt="" onerror="this.remove()">':'')+rich(m.text||''));}
 add('them','Hi! Tell me where you are going, when, and what matters to you in a hotel.\\nהיי! ספרו לי לאן, מתי, ומה חשוב לכם במלון.');
 document.getElementById('new').onclick=function(e){e.preventDefault();sid='sim-'+Math.random().toString(36).slice(2,12);log.innerHTML='';add('them','New chat.');};
+function waitFollow(id,n){if(n>60)return;setTimeout(function(){fetch('/api/chat/followup/'+id).then(function(r){return r.json();}).then(function(d){if(d.status==='done'){(d.messages||[]).forEach(show);}else waitFollow(id,n+1);}).catch(function(){});},1500);}
 f.onsubmit=function(e){
   e.preventDefault();var msg=t.value.trim();if(!msg)return;t.value='';b.disabled=true;add('me',esc(msg));var w=add('them wait','…');
   fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:sid,message:msg,channel:'sim'})})
-   .then(function(r){return r.json();}).then(function(d){w.remove();(d.messages||[{text:d.error||'No reply.'}]).forEach(show);})
+   .then(function(r){return r.json();}).then(function(d){w.remove();(d.messages||[{text:d.error||'No reply.'}]).forEach(show);
+     if(d.followUpId) waitFollow(d.followUpId,0);})
    .catch(function(){w.remove();add('them','Could not reach the server.');})
    .then(function(){b.disabled=false;t.focus();});
 };

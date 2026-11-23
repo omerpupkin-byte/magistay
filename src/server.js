@@ -62,7 +62,7 @@ app.use('/api/search', (req, res, next) => {
 // A chat turn costs a Claude call and often a search: 40 per visitor per 10 minutes.
 const chatHits = new Map();
 app.use('/api/chat', (req, res, next) => {
-  if (req.method === 'GET' && req.path.startsWith('/reply')) return next();
+  if (req.method === 'GET' && (req.path.startsWith('/reply') || req.path.startsWith('/followup') || req.path.startsWith('/say'))) return next();
   const now = Date.now();
   const recent = (chatHits.get(req.ip) || []).filter(t => now - t < WINDOW_MS);
   if (recent.length >= 40) return res.status(429).json({ error: 'Too many messages. Please try again in a few minutes.' });
@@ -94,7 +94,7 @@ app.get('/health', (_req, res) => {
   // Which pieces are switched on — booleans only, never the keys themselves.
   res.json({
     status:  'ok',
-    version: '0.6.4',
+    version: '0.6.5',
     mode:    process.env.ANTHROPIC_API_KEY ? 'ai' : 'mock',
     sources: {
       claude:    !!process.env.ANTHROPIC_API_KEY,

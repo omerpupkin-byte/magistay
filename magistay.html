@@ -1560,7 +1560,7 @@ function buildHotelCard(h,idx){
       '</div></a>';
   }).join('');
   // Prices on sites we cannot send you to: shown as information, without a link.
-  var others=(live&&live.otherPrices)||[];
+  var others=[];   // other sellers are not shown: no link we can earn from
   if(others.length){
     buttons+='<p class="ppr-terms" style="margin:2px 2px 0;">Other sites: '+others.map(function(o){
       return esc(o.seller)+' '+money(o.price,cur);}).join(' · ')+' /night.</p>';

@@ -96,7 +96,8 @@ async function runSearch(input, report = null, ctx = {}) {
 
   // 4. What guests say about the points the data left open (a quiet room,
   //    blackout curtains...). Only when there is something open to check.
-  const judged = found.source !== 'mock' && reviewEvidenceEnabled() ? await addReviewEvidence(priced, quiz) : priced;
+  // A chat can skip this step and follow up with the reviews afterwards (ctx.skipReviews).
+  const judged = found.source !== 'mock' && reviewEvidenceEnabled() && !ctx.skipReviews ? await addReviewEvidence(priced, quiz) : priced;
   timings.reviewsMs = Date.now() - t0 - timings.candidatesMs - timings.matchingMs - timings.pricesMs;
 
   // 5. Booking buttons go through /go, so every click is recorded and
