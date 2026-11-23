@@ -1028,3 +1028,22 @@ test('each step can run on its own model; the default is Haiku 5.5', async () =>
     assert.equal(modelFor('chat'), claudeModel(), 'a malformed value is ignored');
   });
 });
+
+// ── Fixes from the first full review ─────────────────────────
+test('the matcher is never shown a price that is not ours; Hebrew is asked for first', () => {
+  const g = { ...normaliseProperty(gProp({ name: 'UMusic Hotel Madrid' }), { ...madrid, language: 'he' }, 'EUR') };
+  g.bestPrice = { platform: 'google', price: 283 };
+  const prompt = buildMatchPrompt({ ...madrid, language: 'he' }, [g]);
+  assert.doesNotMatch(prompt, /283/, 'the lowest-anywhere price is not shown');
+  assert.match(prompt, /Price: checked after matching/);
+  assert.match(prompt.slice(0, 200), /LANGUAGE: every string value you write.*he/);
+  assert.doesNotMatch(buildMatchPrompt(madrid, [g]).slice(0, 80), /LANGUAGE:/, 'English needs no instruction');
+});
+
+test('a rules-only reserve pick needs something real to show', () => {
+  const real = (h) => h.matchedBy !== 'rules' || h.stars >= 3 || (h.needsCheck || []).some(n => n.status === 'yes');
+  const loft = { matchedBy: 'rules', stars: 0, needsCheck: [{ need: 'Pool', status: 'unknown' }] };
+  const palace = { matchedBy: 'rules', stars: 5, needsCheck: [] };
+  const aiPick = { matchedBy: 'ai', stars: 0, needsCheck: [] };
+  assert.deepEqual([loft, palace, aiPick].filter(real), [palace, aiPick]);
+});

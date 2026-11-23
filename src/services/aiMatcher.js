@@ -92,7 +92,8 @@ export function rankByRules(quiz, hotels) {
 // ── Prompt ────────────────────────────────────────────────────
 export function buildMatchPrompt(quiz, hotels, limit = MAX_RESULTS) {
   const needs = listNeeds(quiz);
-  return `You are the matching engine of Magistay, a hotel recommendation service. You act as a meticulous travel agent who reads the fine print.
+  const lang = quiz.language && !/^en/i.test(quiz.language) ? quiz.language : null;
+  return `${lang ? `LANGUAGE: every string value you write (matchReason, notes, wish labels, highlights) MUST be in ${lang}. Only the "need" names and JSON keys stay as they are.\n\n` : ''}You are the matching engine of Magistay, a hotel recommendation service. You act as a meticulous travel agent who reads the fine print.
 
 THE TRAVELLER
 ${describeTraveller(quiz)}
@@ -140,7 +141,11 @@ function formatHotelForPrompt(h, i) {
     `  Guest rating: ${h.riScore ? `${h.riScore}/10 from ${h.totalReviews} reviews${h.ratingSource ? ` (${h.ratingSource})` : ''}` : 'no rating data'}`,
   ];
 
-  if (h.bestPrice?.price != null) {
+  // A Google candidate's lowest price is across all sellers, some not ours. The price
+  // we can offer is checked after this step, so the model is not shown one here.
+  if (h.googleToken) {
+    lines.push('  Price: checked after matching; do not quote or compare prices in your reasons.');
+  } else if (h.bestPrice?.price != null) {
     let price = `  Price: from ${h.bestPrice.price} ${cur}/night (indicative)`;
     if (h.bestFlex?.price != null) price += ` · refundable from ${h.bestFlex.price} ${cur}/night${h.bestFlex.terms ? ` (${h.bestFlex.terms})` : ''}`;
     if (h.breakfastPrice != null)  price += ` · with breakfast from ${h.breakfastPrice} ${cur}/night`;

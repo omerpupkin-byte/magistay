@@ -85,7 +85,11 @@ async function runSearch(input, report = null, ctx = {}) {
   // 3. Live price per booking platform; keeps the best SHOW that can be
   //    booked. Demo data keeps its sample prices. Never throws.
   const show   = Math.max(1, Math.min(SHOW, Number(ctx.show) || SHOW));     // a chat shows fewer than the site
-  const priced = live ? await pickBookable(matched, quiz, { show, report }) : matched.slice(0, show);
+  const priced0 = live ? await pickBookable(matched, quiz, { show, report }) : matched.slice(0, show);
+  // A pick the AI did not make (the reserve, ranked by rules) must show something
+  // real: a confirmed need, or a rated hotel of at least three stars.
+  const real = (h) => h.matchedBy !== 'rules' || h.stars >= 3 || (h.needsCheck || []).some(n => n.status === 'yes');
+  const priced = priced0.filter(real).length ? priced0.filter(real) : priced0;
 
   // 4. Review summaries, where real review text exists.
   timings.pricesMs = Date.now() - t0 - timings.candidatesMs - timings.matchingMs;
@@ -203,6 +207,8 @@ async function buildCheckReport(q, ctx) {
       stars: h.stars, rating: h.riScore, reviews: h.totalReviews, distanceKm: h.distanceKm,
       needs: h.needsCheck, highlights: h.highlights, reviewEvidence: h.reviewEvidence || null,
       otherPrices: h.livePrices?.otherPrices || [], cheaperElsewhere: h.livePrices?.cheaperElsewhere || null,
+      // Same price on every site we can sell through: plausible, but worth a look in the booking sites.
+      samePriceOnOurSites: (() => { const v = Object.values(h.platforms || {}).filter(x => x?.live).map(x => x.price); return v.length >= 3 && v.every(p => p === v[0]); })(),
       bestPrice: h.bestPrice, listPrice: h.platforms?.google?.price ?? h.platforms?.hotelbeds?.price ?? null,
       platforms: Object.fromEntries(PLATFORMS.map(k => [k, h.platforms?.[k]
         ? { perNight: h.platforms[k].price, total: h.platforms[k].total, directLink: !!h.platforms[k].direct }
