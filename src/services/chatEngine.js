@@ -56,7 +56,7 @@ export async function chatTurn({ sessionId, message, channel = 'web', baseUrl = 
   // 1. Understand.
   let read;
   try {
-    read = await ask(buildUnderstandPrompt(state, text, deps.today || today()), { maxTokens: 900, step: 'chat' });
+    read = await ask(buildUnderstandPrompt(state, text, deps.today || today()), { maxTokens: 2000, step: 'chat' });
   } catch (e) {
     console.error('[CHAT] understanding failed:', String(e?.message || e).slice(0, 160));
     state.lastFailure = { step: 'understand', at: new Date().toISOString(), message: String(e?.message || e).slice(0, 200) };
@@ -168,7 +168,7 @@ Report only what this message states or changes. Leave out anything it does not 
 - "language": the language the traveller writes in, as a two-letter code ("he", "en", "es"...).
 - "reply": one or two short sentences TO the traveller, in their language, warm and plain. If the place or the dates are still unknown after this message, ask for the single most important missing one. If they asked a question, answer it only from what is above; say so if we do not know. Otherwise a brief acknowledgement.
 
-Reply with JSON only:
+Reply with the JSON object only: your first character is "{" and your last is "}". No text, no explanation, no markdown before or after it.
 { "intent": "...", "language": "..", "destination": "...", "destinationLabel": "...", "landmark": "...", "checkIn": "...", "checkOut": "...", "adults": 0, "children": 0, "infants": 0, "childAges": [], "rooms": 0, "budget": "...", "stars": 0, "addPriorities": [], "removePriorities": [], "wishes": "...", "reply": "..." }`;
 }
 
